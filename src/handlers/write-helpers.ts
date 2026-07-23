@@ -39,7 +39,7 @@ import type { LintConfigOptions, RuleOverrides } from '../lint/config-builder.js
 import { detectFilename, validateBeforeWrite } from '../lint/lint.js';
 import type { ServerConfig } from '../server/types.js';
 import { type CacheSecurityContext, invalidateInactiveList } from './cache-security.js';
-import { cachedFeatures } from './feature-cache.js';
+import { getCachedFeatures } from './feature-cache.js';
 import { canonicalTablType, objectUrlForType } from './object-types.js';
 import { errorResult, type ToolResult, textResult } from './shared.js';
 
@@ -53,10 +53,10 @@ import { errorResult, type ToolResult, textResult } from './shared.js';
  */
 export function buildLintConfigOptions(config: ServerConfig, ruleOverrides?: RuleOverrides): LintConfigOptions {
   // Probe-detected system type is most accurate; fall back to CLI config
-  const systemType = cachedFeatures?.systemType ?? (config.systemType !== 'auto' ? config.systemType : undefined);
+  const systemType = getCachedFeatures()?.systemType ?? (config.systemType !== 'auto' ? config.systemType : undefined);
   return {
     systemType,
-    abapRelease: cachedFeatures?.abapRelease ?? config.abapRelease,
+    abapRelease: getCachedFeatures()?.abapRelease ?? config.abapRelease,
     configFile: config.abaplintConfig,
     ruleOverrides,
   };
@@ -316,7 +316,7 @@ export async function mergeMetadataWriteProperties(
  */
 export function resolveWriteSystemType(config: ServerConfig, client: AdtClient): SystemType | undefined {
   const probed =
-    cachedFeatures?.systemType ?? (config.systemType !== 'auto' ? (config.systemType as SystemType) : undefined);
+    getCachedFeatures()?.systemType ?? (config.systemType !== 'auto' ? (config.systemType as SystemType) : undefined);
   return probed ?? (client.usesBearerAuth ? 'btp' : undefined);
 }
 
