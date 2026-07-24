@@ -27,7 +27,7 @@ import { checkPackage } from '../adt/safety.js';
 import {
   createServerDrivenObject,
   deleteServerDrivenObject,
-  serverDrivenBlueContentType,
+  serverDrivenMetadataContentType,
   serverDrivenObjectUrl,
   serverDrivenSourceFormat,
   supportsServerDrivenObject,
@@ -760,11 +760,11 @@ export async function enforceAllowedPackageForObjectUrl(
 }
 
 /**
- * SAPWrite for server-driven objects (8.16+): create / update-source / delete via the generic AFF
- * blue:blueSource + source engine. Discovery-gated (clean 8.16 error otherwise), allowWrites-gated
+ * SAPWrite for server-driven objects: create / update-source / delete via the generic server-driven
+ * metadata engine (blue:blueSource for most types, dtdc:dtdcSource for DTDC). Discovery-gated (clean per-type/discovery error otherwise), allowWrites-gated
  * (through the engine's checkOperation), and allowedPackages-gated against the REAL package
  * (create gates the caller-supplied package like every create; update/delete resolve the object's true
- * package under the blues Accept). The `source` param carries AFF JSON or DDL text per the type's
+ * package under the metadata Accept). The `source` param carries AFF JSON or DDL text per the type's
  * registry sourceFormat — the JSON ones are parse-validated before the
  * PUT; ABAP-specific pre-write steps (lint, RAP preflight, CDS guard) do not apply. Create leaves the
  * object inactive — callers follow with SAPActivate (never auto-activated).
@@ -781,21 +781,22 @@ export async function handleServerDrivenObjectWrite(
   // Discovery gate — mirror handleSAPRead's server-driven branch.
   if (supportsServerDrivenObject(client.http, type) === false) {
     return errorResult(
-      `SAPWrite type=${type} (server-driven object) requires SAP_BASIS 8.16+ (ABAP Platform 2025 / S/4HANA 2025). ` +
-        'This system does not expose this object type.',
+      `SAPWrite type=${type} (server-driven object): this system does not advertise ADT support for it. ` +
+        'These types are discovery-gated and depend on the SAP release / support package ' +
+        '(e.g. DTSC/CSNM/EVTO need ABAP Platform 2025 / SAP_BASIS 8.16+, while DTDC/DSFD/EVTB also ship on S/4HANA 2023 / 758).',
     );
   }
 
   const transport = args.transport as string | undefined;
   const objUrl = serverDrivenObjectUrl(type, name);
-  const blueAccept = serverDrivenBlueContentType(type);
+  const metadataAccept = serverDrivenMetadataContentType(type);
 
   const invalidate = (): void => {
     cachingLayer?.invalidate(type, name, 'all');
     invalidateInactiveList(cachingLayer, client, cacheSecurity);
   };
 
-  // SDO source is AFF JSON for most types but DDL text for others (DTSC, DSFD) — only parse-validate
+  // SDO source is AFF JSON for most types but DDL text for others (DTSC, DSFD, DTDC) — only parse-validate
   // the JSON ones. Validating DDL text as JSON would reject every valid source.
   const validateSource = (): { ok: true; source: string } | { ok: false; result: ToolResult } => {
     const src = String(args.source ?? '');
@@ -850,13 +851,13 @@ export async function handleServerDrivenObjectWrite(
       }
       const v = validateSource();
       if (!v.ok) return v.result;
-      await enforceAllowedPackageForObjectUrl(client, objUrl, `Operations on ${type} '${name}'`, blueAccept);
+      await enforceAllowedPackageForObjectUrl(client, objUrl, `Operations on ${type} '${name}'`, metadataAccept);
       await updateServerDrivenObjectSource(client.http, client.safety, type, name, v.source, { transport });
       invalidate();
       return textResult(`Updated source of ${type} ${name}.\nNext step: SAPActivate(type="${type}", name="${name}").`);
     }
     case 'delete': {
-      await enforceAllowedPackageForObjectUrl(client, objUrl, `Operations on ${type} '${name}'`, blueAccept);
+      await enforceAllowedPackageForObjectUrl(client, objUrl, `Operations on ${type} '${name}'`, metadataAccept);
       await deleteServerDrivenObject(client.http, client.safety, type, name, { transport });
       invalidate();
       return textResult(`Deleted ${type} ${name}.`);
