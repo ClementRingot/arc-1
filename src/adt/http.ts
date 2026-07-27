@@ -615,6 +615,13 @@ export class AdtHttpClient {
         // Clear session to force fresh authentication
         this.resetSession();
 
+        // Pick up an out-of-band rotated cookie file so the call that observes the
+        // expiry can recover; the lazy `cookiesCleared` reload stays the fallback.
+        // `cookieFile`, not `isCookieAuthMode()` — cookieString has nothing to re-read,
+        // and reloadCookiesFromSource keeps config.cookies on a missing/empty file, so
+        // the retry still replays the ticket we have.
+        if (this.config.cookieFile) this.reloadCookiesFromSource();
+
         // Re-apply auth credentials
         this.applyAuthHeader(headers);
         if (this.config.bearerTokenProvider) {
