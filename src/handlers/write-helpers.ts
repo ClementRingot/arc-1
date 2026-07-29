@@ -8,6 +8,7 @@
 
 import type { AdtClient } from '../adt/client.js';
 import {
+  adtResponsibleAttr,
   buildDataElementXml,
   buildDomainXml,
   buildMessageClassXml,
@@ -392,12 +393,12 @@ function buildCreateXmlBody(
   // matches the sap-language URL param ARC-1 already sends. Defaults to "EN" when
   // unset, preserving legacy output. See issue #343.
   const masterLanguage = normalizeAdtLanguage(language);
-  // Person responsible for the created object. Derived from the configured logon
-  // user (passed by callers as config.username). The legacy hard-coded "DEVELOPER"
-  // only exists on SAP demo systems, so on a real system it fails with
-  // 400 [?/049] "Enter a valid user, not DEVELOPER, as the person responsible".
-  // Defaults to "DEVELOPER" only when no user is configured. Same threading as #343.
+  // Person responsible for the created object, from the configured logon user (config.username).
+  // Omitted when it cannot be an on-prem user name — notably the email-style principal under
+  // principal propagation, which overflows XUBNAME (CHAR12) and kills the create ST (#636).
+  // ADT then assigns the logged-on user, which under PP is the propagated one.
   const responsibleUser = normalizeAdtResponsible(responsible);
+  const responsibleAttr = adtResponsibleAttr(responsible);
   switch (type) {
     case 'PROG':
       return `<?xml version="1.0" encoding="UTF-8"?>
@@ -407,8 +408,7 @@ function buildCreateXmlBody(
                      adtcore:name="${escapeXmlAttr(name)}"
                      adtcore:type="PROG/P"
                      adtcore:masterLanguage="${masterLanguage}"
-                     adtcore:masterSystem="H00"
-                     adtcore:responsible="${escapeXmlAttr(responsibleUser)}">
+                     adtcore:masterSystem="H00"${responsibleAttr}>
   <adtcore:packageRef adtcore:name="${escapeXmlAttr(pkg)}"/>
 </program:abapProgram>`;
     case 'CLAS':
@@ -419,8 +419,7 @@ function buildCreateXmlBody(
                  adtcore:name="${escapeXmlAttr(name)}"
                  adtcore:type="CLAS/OC"
                  adtcore:masterLanguage="${masterLanguage}"
-                 adtcore:masterSystem="H00"
-                 adtcore:responsible="${escapeXmlAttr(responsibleUser)}">
+                 adtcore:masterSystem="H00"${responsibleAttr}>
   <adtcore:packageRef adtcore:name="${escapeXmlAttr(pkg)}"/>
 </class:abapClass>`;
     case 'INTF':
@@ -431,8 +430,7 @@ function buildCreateXmlBody(
                     adtcore:name="${escapeXmlAttr(name)}"
                     adtcore:type="INTF/OI"
                     adtcore:masterLanguage="${masterLanguage}"
-                    adtcore:masterSystem="H00"
-                    adtcore:responsible="${escapeXmlAttr(responsibleUser)}">
+                    adtcore:masterSystem="H00"${responsibleAttr}>
   <adtcore:packageRef adtcore:name="${escapeXmlAttr(pkg)}"/>
 </intf:abapInterface>`;
     case 'INCL':
@@ -443,8 +441,7 @@ function buildCreateXmlBody(
                      adtcore:name="${escapeXmlAttr(name)}"
                      adtcore:type="PROG/I"
                      adtcore:masterLanguage="${masterLanguage}"
-                     adtcore:masterSystem="H00"
-                     adtcore:responsible="${escapeXmlAttr(responsibleUser)}">
+                     adtcore:masterSystem="H00"${responsibleAttr}>
   <adtcore:packageRef adtcore:name="${escapeXmlAttr(pkg)}"/>
 </include:abapInclude>`;
     case 'DDLS':
@@ -455,8 +452,7 @@ function buildCreateXmlBody(
                adtcore:name="${escapeXmlAttr(name)}"
                adtcore:type="DDLS/DF"
                adtcore:masterLanguage="${masterLanguage}"
-               adtcore:masterSystem="H00"
-                 adtcore:responsible="${escapeXmlAttr(responsibleUser)}">
+               adtcore:masterSystem="H00"${responsibleAttr}>
   <adtcore:packageRef adtcore:name="${escapeXmlAttr(pkg)}"/>
 </ddl:ddlSource>`;
     case 'DCLS':
@@ -467,8 +463,7 @@ function buildCreateXmlBody(
                adtcore:name="${escapeXmlAttr(name)}"
                adtcore:type="DCLS/DL"
                adtcore:masterLanguage="${masterLanguage}"
-               adtcore:masterSystem="H00"
-               adtcore:responsible="${escapeXmlAttr(responsibleUser)}">
+               adtcore:masterSystem="H00"${responsibleAttr}>
   <adtcore:packageRef adtcore:name="${escapeXmlAttr(pkg)}"/>
 </dcl:dclSource>`;
     case 'TABL':
@@ -485,8 +480,7 @@ function buildCreateXmlBody(
                  adtcore:name="${escapeXmlAttr(name)}"
                  adtcore:type="${adtType}"
                  adtcore:masterLanguage="${masterLanguage}"
-                 adtcore:masterSystem="H00"
-                 adtcore:responsible="${escapeXmlAttr(responsibleUser)}">
+                 adtcore:masterSystem="H00"${responsibleAttr}>
   <adtcore:packageRef adtcore:name="${escapeXmlAttr(pkg)}"/>
 </blue:blueSource>`;
     }
@@ -511,8 +505,7 @@ function buildCreateXmlBody(
                  adtcore:name="${escapeXmlAttr(name)}"
                  adtcore:type="BDEF/BDO"
                  adtcore:masterLanguage="${masterLanguage}"
-                 adtcore:masterSystem="H00"
-                 adtcore:responsible="${escapeXmlAttr(responsibleUser)}">${extTemplate}
+                 adtcore:masterSystem="H00"${responsibleAttr}>${extTemplate}
   <adtcore:packageRef adtcore:name="${escapeXmlAttr(pkg)}"/>
 </blue:blueSource>`;
     }
@@ -524,8 +517,7 @@ function buildCreateXmlBody(
                  adtcore:name="${escapeXmlAttr(name)}"
                  adtcore:type="SRVD/SRV"
                  adtcore:masterLanguage="${masterLanguage}"
-                 adtcore:masterSystem="H00"
-                 adtcore:responsible="${escapeXmlAttr(responsibleUser)}"
+                 adtcore:masterSystem="H00"${responsibleAttr}
                  srvd:srvdSourceType="S">
   <adtcore:packageRef adtcore:name="${escapeXmlAttr(pkg)}"/>
 </srvd:srvdSource>`;
@@ -559,8 +551,7 @@ function buildCreateXmlBody(
                  adtcore:name="${escapeXmlAttr(name)}"
                  adtcore:type="DDLX/EX"
                  adtcore:masterLanguage="${masterLanguage}"
-                 adtcore:masterSystem="H00"
-                     adtcore:responsible="${escapeXmlAttr(responsibleUser)}">
+                 adtcore:masterSystem="H00"${responsibleAttr}>
   <adtcore:packageRef adtcore:name="${escapeXmlAttr(pkg)}"/>
 </ddlx:ddlxSource>`;
     case 'DOMA': {
