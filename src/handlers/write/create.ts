@@ -17,7 +17,7 @@ import { type FmParameter, spliceFmSignature } from '../../adt/fm-signature.js';
 import { checkPackage } from '../../adt/safety.js';
 import { isServerDrivenObjectType } from '../../adt/server-driven.js';
 import { getTransport, getTransportInfo } from '../../adt/transport.js';
-import { escapeXmlAttr } from '../../adt/xml-parser.js';
+import { escapeXmlAttr, parseFunctionModuleProperties } from '../../adt/xml-parser.js';
 import { validateAffHeader } from '../../aff/validator.js';
 import { logger } from '../../server/logger.js';
 import {
@@ -27,7 +27,12 @@ import {
 } from '../activate.js';
 import { invalidateInactiveList } from '../cache-security.js';
 import { guardCdsSyntax } from '../cds-hints.js';
-import { getCachedFeatures, isTablesEndpointAvailable, isTableTypesEndpointAvailable } from '../feature-cache.js';
+import {
+  getCachedFeatures,
+  isDomainsEndpointAvailable,
+  isTablesEndpointAvailable,
+  isTableTypesEndpointAvailable,
+} from '../feature-cache.js';
 import type { FunctionProcessingType, FunctionUpdateTaskKind } from '../function-processing.js';
 import {
   functionGroupObjectUrl,
@@ -42,6 +47,7 @@ import { errorResult, type ToolResult, textResult } from '../shared.js';
 import {
   buildCreateXml,
   createContentTypeForType,
+  DOMA_WRITE_UNAVAILABLE_HINT,
   dtelNeedsPostCreateUpdate,
   getMetadataWriteProperties,
   isMetadataWriteType,
@@ -146,19 +152,6 @@ function rewriteFunctionModuleProcessingMetadata(
   return `${xml.slice(0, rootMatch.index)}${rewrittenRoot}${xml.slice(rootMatch.index + rootMatch[0].length)}`;
 }
 
-/**
- * Read a processing attribute off the ROOT element only. Scoping matters: this
- * is the fail-closed check, and the same document also carries an
- * `<adtcore:containerRef>` child, so a whole-document scan could answer from
- * something that is not the function module's own metadata.
- */
-function functionModuleAttribute(xml: string, name: 'processingType' | 'updateTaskKind'): string | undefined {
-  const root = /<fmodule:abapFunctionModule\b[^>]*>/i.exec(xml)?.[0];
-  if (!root) return undefined;
-  const match = new RegExp(`\\bfmodule:${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i').exec(root);
-  return match?.[1] ?? match?.[2];
-}
-
 async function persistFunctionModuleProcessingMetadata(
   client: SapWriteContext['client'],
   objectUrl: string,
@@ -195,8 +188,8 @@ async function persistFunctionModuleProcessingMetadata(
     // A 2xx response alone is insufficient evidence: the collection POST accepts
     // these attributes and still retains `normal` (live-verified on 758).
     const persisted = await client.getObjectMetadata(inactiveUrl);
-    const actualProcessingType = functionModuleAttribute(persisted.body, 'processingType');
-    const actualUpdateTaskKind = functionModuleAttribute(persisted.body, 'updateTaskKind');
+    const { processingType: actualProcessingType, updateTaskKind: actualUpdateTaskKind } =
+      parseFunctionModuleProperties(persisted.body);
     if (
       actualProcessingType !== processingType ||
       (updateTaskKind === undefined ? actualUpdateTaskKind !== undefined : actualUpdateTaskKind !== updateTaskKind)
@@ -221,18 +214,19 @@ async function resolveFunctionGroupCreatePackage(
   client: SapWriteContext['client'],
   group: string,
   requestedPackage: unknown,
+  childType: 'FUNC' | 'INCL' = 'FUNC',
 ): Promise<string> {
   const actualPackage = await client.resolveObjectPackage(functionGroupObjectUrl(group));
   if (!actualPackage) {
     throw new Error(
-      `FUNC create blocked: ARC-1 could not determine the parent function group "${group}" package from ADT metadata.`,
+      `${childType} create blocked: ARC-1 could not determine the parent function group "${group}" package from ADT metadata.`,
     );
   }
   const explicitPackage =
     requestedPackage === undefined || requestedPackage === null ? undefined : String(requestedPackage).trim();
   if (explicitPackage && explicitPackage.toUpperCase() !== actualPackage.toUpperCase()) {
     throw new Error(
-      `FUNC inherits package "${actualPackage}" from parent function group "${group}"; requested package "${explicitPackage}" does not match.`,
+      `${childType} inherits package "${actualPackage}" from parent function group "${group}"; requested package "${explicitPackage}" does not match.`,
     );
   }
   return actualPackage;
@@ -462,10 +456,14 @@ export async function writeActionCreate(ctx: SapWriteContext): Promise<ToolResul
     srcUrl,
     invalidateWrittenObject,
   } = ctx;
-  const pkg =
-    type === 'FUNC'
-      ? await resolveFunctionGroupCreatePackage(client, String(args.group ?? '').trim(), args.package)
-      : String(args.package ?? '$TMP');
+  // FUNC and FUGR structural includes both INHERIT the parent group's package — SAP ignores
+  // _package for them — so the allowlist must be checked against the group's real package.
+  // Gating on args.package here would let a caller write into a disallowed package by claiming $TMP.
+  const groupArg = String(args.group ?? '').trim();
+  const inheritsGroupPackage = type === 'FUNC' || (type === 'INCL' && groupArg !== '');
+  const pkg = inheritsGroupPackage
+    ? await resolveFunctionGroupCreatePackage(client, groupArg, args.package, type === 'INCL' ? 'INCL' : 'FUNC')
+    : String(args.package ?? '$TMP');
   await checkPackage(client.safety, pkg, client.getPackageHierarchyResolver());
   const description = String(args.description ?? name);
 
@@ -644,7 +642,7 @@ export async function writeActionCreate(ctx: SapWriteContext): Promise<ToolResul
   // DOMA/DTEL/BDEF require vendor-specific content types; all other types use
   // 'application/*' — the wildcard lets the SAP server resolve the correct
   // handler (matching how ADT Eclipse and abap-adt-api send requests).
-  const contentType = createContentTypeForType(type, cloud);
+  const contentType = createContentTypeForType(type, cloud, type === 'INCL' && String(args.group ?? '').trim() !== '');
   const needsPackageParam = type === 'BDEF' || type === 'TABL' || type === 'TABL/DT' || type === 'TABL/DS';
   let result: string;
   try {
@@ -1050,6 +1048,17 @@ export async function writeActionBatchCreate(ctx: SapWriteContext): Promise<Tool
           packageName: objPackage,
           status: 'failed',
           error: TABL_DT_WRITE_UNAVAILABLE_HINT,
+        });
+        break;
+      }
+      // DOMA create needs /ddic/domains/ (absent wholesale on NW 7.50/7.51) — mirror the gate above.
+      if (objType === 'DOMA' && isDomainsEndpointAvailable() === false) {
+        results.push({
+          type: objType,
+          name: objName,
+          packageName: objPackage,
+          status: 'failed',
+          error: DOMA_WRITE_UNAVAILABLE_HINT,
         });
         break;
       }
