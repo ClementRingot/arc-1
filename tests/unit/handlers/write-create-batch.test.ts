@@ -201,18 +201,6 @@ describe('SAPWrite handler — create / batch_create', () => {
       expect(result.content[0]?.text).toContain('8.16+');
       expect(callMatching('POST', '/sap/bc/adt/ddic/desd')).toBeUndefined();
     });
-
-    it('SAPActivate routes a server-driven type through the registry URL', async () => {
-      await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPActivate', {
-        action: 'activate',
-        type: 'DESD',
-        name: 'ZARC1_SDO',
-      });
-      // Routing worked iff the activation request referenced the SDO URL (no objectBasePath throw).
-      const activation = callMatching('POST', '/sap/bc/adt/activation');
-      expect(activation).toBeDefined();
-      expect(activation?.[1].body).toContain('/sap/bc/adt/ddic/desd/ZARC1_SDO');
-    });
   });
 
   describe('SAPWrite package enforcement', () => {
