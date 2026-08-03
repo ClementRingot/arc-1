@@ -17,9 +17,9 @@ jobs:
     steps:
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7  # v5
         id: release
-        # No release-type here — the action reads release-please-config.json,
-        # which sets bump-minor-pre-major: true so breaking changes only bump
-        # the minor version while the package is pre-1.0.0.
+        # No release-type here — the action reads release-please-config.json.
+        # From 1.0 the pre-major bump flags are gone, so semver applies normally:
+        # feat→minor, fix→patch, breaking→major.
 
   # npm publishes independently of the Docker CVE gate — a HIGH/CRITICAL finding
   # blocks the Docker image but not the npm package. (The scheduled security-scan.yml
@@ -65,6 +65,37 @@ jobs:
 
       - name: Publish to npm
         run: npm publish --provenance --access public
+
+  # Point the GitHub Release at the annotated release notes (docs_page/release-notes.md), which
+  # add the context release-please cannot: what each change means and whether it needs an action.
+  # Append-only and idempotent — never rewrites the generated body. Best-effort by design.
+  link-release-notes:
+    needs: [release-please]
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - name: Append annotated-notes link to the release body
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          NOTES_URL: https://docs.arc-1-mcp.com/release-notes/
+        run: |
+          set -euo pipefail
+
+          # `// ""` matters: a release with no body is JSON null, and `--jq .body` would
+          # print the literal string "null" straight into the notes.
+          BODY="$(gh release view "$RELEASE_TAG" --json body --jq '.body // ""')"
+          if [[ "$BODY" == *"$NOTES_URL"* ]]; then
+            echo "Release body already links the annotated notes"
+            exit 0
+          fi
+
+          printf '%s\n\n---\n\n📖 **[Annotated release notes](%s)** — what these changes mean and whether they need an action.\n' \
+            "$BODY" "$NOTES_URL" | gh release edit "$RELEASE_TAG" --notes-file -
 
   # Publish a production-dependency CycloneDX SBOM after the npm package succeeds.
   # Keep this separate from publish-npm so the OIDC publishing job stays read-only
