@@ -810,7 +810,7 @@ SAPQuery(sql="SELECT * FROM mara WHERE matnr LIKE 'Z%'", maxRows=50)
 
 ## SAPTransport
 
-Manage CTS transport requests (SE09/SE10 equivalent): list, get details, create, release, delete, reassign owner, recursive release, check transport requirements, and object transport history (reverse lookup). `create` uses the ADT `CreateCorrectionRequest` endpoint, which works on both NetWeaver 7.50+ and S/4HANA.
+Manage CTS transport requests (SE09/SE10 equivalent): list, get details, create, release, delete, reassign owner, recursive release, check transport requirements, and inspect an object's current lock/assignment status. The legacy action name for that status lookup is `history`, but it is not complete transport history. `create` uses the ADT `CreateCorrectionRequest` endpoint, which works on both NetWeaver 7.50+ and S/4HANA.
 
 In multi-target v1, only the read-only `list`, `get`, `check`, and `history` actions are listed and
 accepted. Transport mutations and topology actions remain structurally unavailable.
@@ -823,56 +823,66 @@ accepted. Transport mutations and topology actions remain structurally unavailab
 | `id` | string | No | Transport request ID, e.g. `A4HK900123` (for get/release/delete/remove_object/reassign/release_recursive) |
 | `description` | string | No | Transport description text (required for create) |
 | `name` | string | No | Object name (for check/history/remove_object actions, e.g. `ZCL_ORDER`) |
-| `package` | string | No | Package name. For `create`: optional — defaults to `$TMP`, pass an explicit package to influence the transport route. For `check`: required. |
+| `package` | string | No | Package name. For `create`: optional — defaults to `$TMP`; an explicit package influences the route/target while the request remains Workbench type K. For `check`: required. |
 | `user` | string | No | SAP username to filter by (for list). Defaults to the current SAP user. Use `*` to list all users. |
 | `status` | string | No | Transport status filter (for list). `D`=modifiable (default), `R`=released, `*`=all statuses. |
-| `type` | string | No | Object type for `check`/`history`/`remove_object` actions (`PROG`, `CLAS`, `DDLS`, etc.). For `remove_object` it is the CTS/E071 object type exactly as shown by `get` (e.g. `PROG`, `DEVC`). Not used by `create` — the SAP backend infers transport type (K/W/T) from the package's TADIR route on the `CreateCorrectionRequest` endpoint. |
+| `type` | string | No | Object type for `check`/`history`/`remove_object` actions (`PROG`, `CLAS`, `DDLS`, etc.). For `remove_object` it is the CTS/E071 object type exactly as shown by `get` (e.g. `PROG`, `DEVC`). Not used by `create`, which creates a Workbench (K) request. |
+| `operation` | string | No | For `check`: `create` (default, sends ADT operation `I`) or `modify` (sends the empty modify operation). |
 | `pgmid` | string | No | Program ID for `remove_object`: `R3TR` (whole object) or `LIMU` (sub-object). Required for `remove_object` — the object type alone does not determine `pgmid`. |
 | `owner` | string | No | New owner SAP username (required for reassign) |
 | `recursive` | boolean | No | Apply recursively to child tasks (for delete/reassign). `release_recursive` always recurses. |
 | `summary` | boolean | No | For `list` only. **Default `true`** — headers-only: omits each transport's (and task's) `objects[]`, keeping `id`/`description`/`owner`/`status`/`target` plus an `objectCount`. Pass `false` for full object lists (~5x larger). |
+| `maxResults` | number | No | Maximum list rows or check/history assignment candidates (defaults: list/history 50, check 10; max 1000). |
 
 **Actions:**
 
 - **`list`** — List transport requests. Defaults to current user, modifiable (status D), all types (Workbench, Customizing, Transport of Copies). Returns a paged envelope `{total, shown, truncated, transports}` — `total` is the full backlog, so a capped page still reports it. Summarised by default (object lists dropped, `objectCount` kept): scan cheaply, then `get` the one you want in full; pass `summary=false` for the object lists. Paged at `maxResults` (default 50, max 1000). Live: 55 requests went 104 KB / ~26K tokens → 23 KB / ~5.7K tokens.
 - **`get`** — Get transport details including tasks and objects.
-- **`create`** — Create a new transport request. Requires `description`. Optional `package` (defaults to `$TMP` — pass an explicit package to influence the transport route, which determines K/W/T type). Uses the ADT `CreateCorrectionRequest` endpoint (`POST /sap/bc/adt/cts/transports`); legacy NW 7.50 systems are supported.
+- **`create`** — Create a new Workbench (K) transport request. Requires `description`. Optional `package` (defaults to `$TMP` — pass an explicit package to influence the transport route/target, not the request category). Uses the ADT `CreateCorrectionRequest` endpoint (`POST /sap/bc/adt/cts/transports`); legacy NW 7.50 systems are supported.
 - **`release`** — Release a single transport or task.
 - **`delete`** — Delete a transport. Use `recursive=true` to delete tasks first.
 - **`remove_object`** — Remove a single object from a request while **keeping the request** (the SE09/SE10 "remove from request" operation). Requires the full CTS object key `pgmid` + `type` + `name` (the object type alone does not determine `pgmid` — e.g. `COMM` is valid under both `R3OB` and `LIMU`). ARC-1 resolves the entry from the request's object list and removes it via the ADT `removeobject` operation; the object itself is **not** deleted. Functional on SAP_BASIS 7.58/8.16; on NW 7.5x the backend ignores `removeobject` (HTTP 400) — clean such requests in SE09/SE10.
 - **`reassign`** — Change transport owner. Requires `owner`. Use `recursive=true` for tasks too.
 - **`release_recursive`** — Release all unreleased tasks first, then the transport itself.
-- **`check`** — Check if a transport number is required for creating an object in a specific package. Requires `type`, `name`, and `package`. Returns whether transport recording is required, whether the package is local, existing transports, and any locked transport. **Does NOT require `--allow-transport-writes`** — this is a read-only pre-flight check.
-- **`history`** — Reverse lookup: given an object (`type` + `name`), list the transport requests that reference it. Returns the locked transport (if any), all related transports, and candidate transports for assignment. Read-only; does NOT require `--allow-transport-writes`.
+- **`check`** — Check whether a transport is required for creating or modifying an object in a specific package. Requires `type`, `name`, and `package`; `operation` defaults to `create`. Returns whether a transport is required, whether a new assignment is required, local-package status, bounded candidate requests, SAP diagnostics, and any existing lock with owner/task details. **Does NOT require `--allow-transport-writes`** — this is a read-only pre-flight check.
+- **`history`** — Legacy action name for current object transport status. Given `type` + `name`, it returns at most the request currently holding the object lock in `relatedTransports`, plus bounded `candidateTransports` the object could be assigned to. Candidates do **not** contain the object and are not historical/conflict evidence. Complete history requires an authorized E071/E070 data workflow because the standard ADT endpoints expose only current assignment state. Read-only; does NOT require `--allow-transport-writes`.
 
 **Check action output:**
 ```json
 {
+  "operation": "create",
   "package": "ZDEV",
   "transportRequired": true,
+  "transportAssignmentRequired": true,
   "isLocal": false,
   "deliveryUnit": "HOME",
+  "result": "S",
+  "existingTransportTotal": 1,
+  "existingTransportsShown": 1,
   "existingTransports": [
     { "id": "A4HK900123", "description": "My transport", "owner": "DEVELOPER" }
   ],
-  "summary": "Package \"ZDEV\" requires a transport for object creation."
+  "existingTransportsTruncated": false,
+  "summary": "Package \"ZDEV\" requires a transport assignment for object creation."
 }
 ```
 
-**History action output:**
+**Current object transport status output (`history` legacy action name):**
 ```json
 {
   "object": { "type": "CLAS", "name": "ZCL_ORDER", "uri": "/sap/bc/adt/oo/classes/zcl_order" },
-  "lockedTransport": "A4HK900123",
-  "relatedTransports": [
-    { "id": "A4HK900123", "description": "", "owner": "", "status": "D" }
-  ],
+  "relatedTransports": [],
   "candidateTransports": [
     { "id": "A4HK900124", "description": "Refactor", "owner": "DEVELOPER" }
   ],
-  "summary": "Object ZCL_ORDER is locked in transport A4HK900123."
+  "candidateTotal": 1,
+  "candidateTruncated": false,
+  "summary": "Object ZCL_ORDER has no active lock; 1 transport(s) available for assignment."
 }
 ```
+
+When an object is currently locked, `lockedTransport` is present, `relatedTransports` contains that
+one parent request, and `candidateTransports` is empty.
 
 **List defaults:** Without parameters, `list` returns modifiable transports (status D) for the current SAP user, across all transport types (Workbench, Customizing, Transport of Copies). Query params follow sapcli's `workbench_params()` pattern (`requestType=KWT`, `requestStatus`).
 
