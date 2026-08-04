@@ -814,6 +814,282 @@ describe('SAPTransport + SAPWrite transport behavior', () => {
     });
   });
 
+  /**
+   * `diff` over the live a4h shapes: a released transport whose only real entry is a LIMU
+   * METH, and a class whose versions feed returns 00002, 00000, 00001 in that order.
+   */
+  describe('SAPTransport diff', () => {
+    function diffClient(): InstanceType<typeof AdtClient> {
+      return new AdtClient({
+        baseUrl: 'http://sap:8000',
+        username: 'admin',
+        password: 'secret',
+        safety: unrestrictedSafetyConfig(),
+      });
+    }
+
+    /** Route the transport read, the five class version feeds, and the revision sources. */
+    function mockDiffBackend(sources: Record<string, string> = {}) {
+      mockFetch.mockImplementation((url: string) => {
+        const u = String(url);
+        if (u.includes('/cts/transportrequests/')) {
+          return Promise.resolve(mockResponse(200, loadFixture('transport-released-a4h-758.xml')));
+        }
+        // Order matters: a revision's content URI also contains "/includes/main/versions".
+        const content = u.match(/\/versions\/\d+\/(\d{5})\/content/);
+        if (content) {
+          const num = content[1];
+          return Promise.resolve(mockResponse(200, sources[num] ?? `CLASS zcl_x DEFINITION.\n" v${num}\nENDCLASS.\n`));
+        }
+        if (u.includes('/includes/main/versions')) {
+          return Promise.resolve(mockResponse(200, loadFixture('versions-clas-a4h-758.xml')));
+        }
+        // Any other include's feed (definitions/implementations/…) does not exist for this class.
+        return Promise.resolve(mockResponse(404, 'No suitable resource found'));
+      });
+    }
+
+    it('requires an id', async () => {
+      const result = await handleToolCall(diffClient(), DEFAULT_CONFIG, 'SAPTransport', { action: 'diff' });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toContain('Transport ID is required');
+    });
+
+    it('rolls the LIMU METH entry up to one class and diffs 00001 -> 00002', async () => {
+      mockDiffBackend();
+      const result = await handleToolCall(diffClient(), DEFAULT_CONFIG, 'SAPTransport', {
+        action: 'diff',
+        id: 'A4HK906291',
+      });
+      expect(result.isError).toBeUndefined();
+      const payload = JSON.parse(result.content[0]?.text ?? '{}');
+      expect(payload.totalObjects).toBe(1);
+      expect(payload.objects[0]).toMatchObject({ type: 'CLAS', name: 'ZCL_ARC1_DEMO_CALC' });
+      const main = payload.objects[0].parts.find((p: { part: string }) => p.part === 'main');
+      expect(main).toMatchObject({
+        selectionMethod: 'exact-transport',
+        baselineStatus: 'prior-revision',
+        from: '00001 (A4HK906289)',
+        to: '00002 (A4HK906291)',
+      });
+      expect(main.diff).toContain('v00001');
+      expect(main.diff).toContain('v00002');
+    });
+
+    it('reports the comparison model and transport header', async () => {
+      mockDiffBackend();
+      const result = await handleToolCall(diffClient(), DEFAULT_CONFIG, 'SAPTransport', {
+        action: 'diff',
+        id: 'A4HK906291',
+      });
+      const payload = JSON.parse(result.content[0]?.text ?? '{}');
+      expect(payload.comparison).toBe('transport-correction-to-immediate-previous');
+      expect(payload.transport).toMatchObject({ id: 'A4HK906291', status: 'R' });
+    });
+
+    it('says so when the two selected revisions carry identical source', async () => {
+      mockDiffBackend({ '00001': 'SAME\n', '00002': 'SAME\n' });
+      const result = await handleToolCall(diffClient(), DEFAULT_CONFIG, 'SAPTransport', {
+        action: 'diff',
+        id: 'A4HK906291',
+      });
+      const payload = JSON.parse(result.content[0]?.text ?? '{}');
+      const main = payload.objects[0].parts.find((p: { part: string }) => p.part === 'main');
+      expect(main.diff).toBe('');
+      expect(main.note).toMatch(/no source change/);
+    });
+
+    it('clamps limit to the SAP-compatible ceiling of 40', async () => {
+      mockDiffBackend();
+      const result = await handleToolCall(diffClient(), DEFAULT_CONFIG, 'SAPTransport', {
+        action: 'diff',
+        id: 'A4HK906291',
+        limit: 5000,
+      });
+      const payload = JSON.parse(result.content[0]?.text ?? '{}');
+      expect(payload.shown).toBe(1);
+      expect(payload.offset).toBe(0);
+    });
+
+    /** A transport fixture whose class entry is a CINC, so `implementations` is really selected. */
+    function ccimpTransportXml(): string {
+      return loadFixture('transport-released-a4h-758.xml').replace(
+        /tm:pgmid="LIMU" tm:type="METH" tm:name="[^"]*"/g,
+        `tm:pgmid="LIMU" tm:type="CINC" tm:name="${'ZCL_ARC1_DEMO_CALC'.padEnd(30, '=')}CCIMP"`,
+      );
+    }
+
+    it('keeps a failed part visible as baseline-unavailable, never as "not changed"', async () => {
+      mockFetch.mockImplementation((url: string) => {
+        const u = String(url);
+        if (u.includes('/cts/transportrequests/')) return Promise.resolve(mockResponse(200, ccimpTransportXml()));
+        return Promise.resolve(mockResponse(500, 'Internal error: object ZCL_X does not exist'));
+      });
+      const result = await handleToolCall(diffClient(), DEFAULT_CONFIG, 'SAPTransport', {
+        action: 'diff',
+        id: 'A4HK906291',
+      });
+      const payload = JSON.parse(result.content[0]?.text ?? '{}');
+      const parts = payload.objects[0].parts as Array<{ part: string; baselineStatus: string; note?: string }>;
+      // The CINC entry must select `implementations` — if it selected `main` the 30-char/suffix
+      // parsing regressed and this test would silently stop covering the failure path.
+      expect(parts.map((p) => p.part)).toEqual(['implementations']);
+      expect(parts[0].baselineStatus).toBe('baseline-unavailable');
+      expect(parts[0].note).not.toMatch(/not changed/);
+      expect(parts[0].note).toMatch(/revision history unavailable/);
+    });
+
+    it('reports an inventory reason rather than an empty object when every part 404s', async () => {
+      mockFetch.mockImplementation((url: string) => {
+        const u = String(url);
+        if (u.includes('/cts/transportrequests/')) return Promise.resolve(mockResponse(200, ccimpTransportXml()));
+        return Promise.resolve(mockResponse(404, 'No suitable resource found'));
+      });
+      const result = await handleToolCall(diffClient(), DEFAULT_CONFIG, 'SAPTransport', {
+        action: 'diff',
+        id: 'A4HK906291',
+      });
+      const payload = JSON.parse(result.content[0]?.text ?? '{}');
+      expect(payload.objects[0].parts).toEqual([]);
+      // Without this the object is indistinguishable from "nothing changed".
+      expect(payload.objects[0].inventoryReason).toMatch(/no readable source/);
+    });
+
+    it('withholds SAP diagnostics from result notes under minimalErrors', async () => {
+      mockFetch.mockImplementation((url: string) => {
+        const u = String(url);
+        if (u.includes('/cts/transportrequests/')) {
+          return Promise.resolve(mockResponse(200, loadFixture('transport-released-a4h-758.xml')));
+        }
+        return Promise.resolve(mockResponse(403, 'User MARIAN lacks S_ADT_RES for /sap/bc/adt/oo/classes'));
+      });
+      const result = await handleToolCall(diffClient(), { ...DEFAULT_CONFIG, minimalErrors: true }, 'SAPTransport', {
+        action: 'diff',
+        id: 'A4HK906291',
+      });
+      const payload = JSON.parse(result.content[0]?.text ?? '{}');
+      const note = payload.objects[0].parts[0].note as string;
+      // The transport header still carries its own owner/description — only the SAP
+      // diagnostic and the ADT path must be withheld.
+      expect(note).not.toContain('S_ADT_RES');
+      expect(note).not.toContain('MARIAN');
+      expect(note).not.toContain('/sap/bc/adt/');
+      expect(note).toContain('status 403');
+    });
+
+    it('includes the SAP diagnostic in result notes when minimalErrors is off', async () => {
+      mockFetch.mockImplementation((url: string) => {
+        const u = String(url);
+        if (u.includes('/cts/transportrequests/')) {
+          return Promise.resolve(mockResponse(200, loadFixture('transport-released-a4h-758.xml')));
+        }
+        return Promise.resolve(mockResponse(403, 'User lacks S_ADT_RES'));
+      });
+      const result = await handleToolCall(diffClient(), DEFAULT_CONFIG, 'SAPTransport', {
+        action: 'diff',
+        id: 'A4HK906291',
+      });
+      const payload = JSON.parse(result.content[0]?.text ?? '{}');
+      expect(payload.objects[0].parts[0].note).toContain('S_ADT_RES');
+    });
+
+    it('pages deterministically with offset and reports the next page', async () => {
+      // Three objects in deliberately non-alphabetical document order, so slice() and the sort
+      // key are both exercised: unsorted paging would partition them differently.
+      const objects = ['ZPROG_C', 'ZPROG_A', 'ZPROG_B']
+        .map((n) => `<tm:abap_object tm:pgmid="R3TR" tm:type="PROG" tm:name="${n}" tm:wbtype="PROG/P"/>`)
+        .join('');
+      const xml =
+        `<?xml version="1.0" encoding="utf-8"?><tm:root xmlns:tm="http://www.sap.com/cts/adt/tm">` +
+        `<tm:request tm:number="A4HK906291" tm:desc="paging" tm:owner="MARIAN" tm:status="R" tm:type="K">` +
+        `<tm:task tm:number="A4HK906292" tm:owner="MARIAN" tm:status="R">${objects}</tm:task>` +
+        `</tm:request></tm:root>`;
+      mockFetch.mockImplementation((u: string) =>
+        String(u).includes('/cts/transportrequests/')
+          ? Promise.resolve(mockResponse(200, xml))
+          : Promise.resolve(mockResponse(404, 'No suitable resource found')),
+      );
+      const page = async (offset: number, limit: number) =>
+        JSON.parse(
+          (
+            await handleToolCall(diffClient(), DEFAULT_CONFIG, 'SAPTransport', {
+              action: 'diff',
+              id: 'A4HK906291',
+              offset,
+              limit,
+            })
+          ).content[0]?.text ?? '{}',
+        );
+
+      const first = await page(0, 2);
+      expect(first.totalObjects).toBe(3);
+      expect(first.shown).toBe(2);
+      expect(first.hint).toContain('offset=2');
+      const second = await page(2, 2);
+      expect(second.shown).toBe(1);
+      expect(second.hint).toBeUndefined();
+
+      // The two pages partition the set with no gap and no repeat, in sorted order.
+      const names = [...first.objects, ...second.objects].map((o: { name: string }) => o.name);
+      expect(names).toEqual(['ZPROG_A', 'ZPROG_B', 'ZPROG_C']);
+    });
+
+    it('reviews objects recorded on the request itself, not only under a task', async () => {
+      // A transport of copies stores abap_object directly under <tm:request>; reviewing only
+      // tasks returned an empty change set indistinguishable from "nothing changed".
+      const xml =
+        `<?xml version="1.0" encoding="utf-8"?><tm:root xmlns:tm="http://www.sap.com/cts/adt/tm">` +
+        `<tm:request tm:number="A4HK906291" tm:desc="copies" tm:owner="MARIAN" tm:status="R" tm:type="T">` +
+        `<tm:abap_object tm:pgmid="R3TR" tm:type="PROG" tm:name="ZREQ_LEVEL" tm:wbtype="PROG/P"/>` +
+        `</tm:request></tm:root>`;
+      mockFetch.mockImplementation((u: string) =>
+        String(u).includes('/cts/transportrequests/')
+          ? Promise.resolve(mockResponse(200, xml))
+          : Promise.resolve(mockResponse(404, 'No suitable resource found')),
+      );
+      const result = await handleToolCall(diffClient(), DEFAULT_CONFIG, 'SAPTransport', {
+        action: 'diff',
+        id: 'A4HK906291',
+      });
+      const payload = JSON.parse(result.content[0]?.text ?? '{}');
+      expect(payload.totalObjects).toBe(1);
+      expect(payload.objects[0]).toMatchObject({ type: 'PROG', name: 'ZREQ_LEVEL' });
+    });
+
+    it('does not let the request-level mirror add the request id to taskIds', async () => {
+      // A released workbench request mirrors its task objects at request level; adding those
+      // again would stamp the object with the request id and read as an extra task.
+      const objectXml = `<tm:abap_object tm:pgmid="R3TR" tm:type="PROG" tm:name="ZMIRRORED" tm:wbtype="PROG/P"/>`;
+      const xml =
+        `<?xml version="1.0" encoding="utf-8"?><tm:root xmlns:tm="http://www.sap.com/cts/adt/tm">` +
+        `<tm:request tm:number="A4HK906291" tm:desc="mirror" tm:owner="MARIAN" tm:status="R" tm:type="K">` +
+        objectXml +
+        `<tm:task tm:number="A4HK906292" tm:owner="MARIAN" tm:status="R">${objectXml}</tm:task>` +
+        `</tm:request></tm:root>`;
+      mockFetch.mockImplementation((u: string) =>
+        String(u).includes('/cts/transportrequests/')
+          ? Promise.resolve(mockResponse(200, xml))
+          : Promise.resolve(mockResponse(404, 'No suitable resource found')),
+      );
+      const result = await handleToolCall(diffClient(), DEFAULT_CONFIG, 'SAPTransport', {
+        action: 'diff',
+        id: 'A4HK906291',
+      });
+      const payload = JSON.parse(result.content[0]?.text ?? '{}');
+      expect(payload.totalObjects).toBe(1);
+      expect(payload.objects[0].taskIds).toEqual(['A4HK906292']);
+    });
+
+    it('reports an unknown transport instead of throwing', async () => {
+      mockFetch.mockResolvedValue(mockResponse(200, loadFixture('transport-released-a4h-758.xml')));
+      const result = await handleToolCall(diffClient(), DEFAULT_CONFIG, 'SAPTransport', {
+        action: 'diff',
+        id: 'A4HK999999',
+      });
+      expect(result.content[0]?.text).toContain('not found');
+    });
+  });
+
   describe('transport error hints', () => {
     it('corrNr-missing error includes transport hint', async () => {
       mockFetch.mockReset();

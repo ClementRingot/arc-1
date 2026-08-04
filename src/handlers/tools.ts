@@ -227,7 +227,7 @@ const SAPMANAGE_ACTIONS_WRITE = [
   'set_api_state',
 ];
 
-const SAPTRANSPORT_ACTIONS_READ = ['list', 'get', 'check', 'history', 'layers', 'targets'];
+const SAPTRANSPORT_ACTIONS_READ = ['list', 'get', 'diff', 'check', 'history', 'layers', 'targets'];
 const SAPTRANSPORT_ACTIONS_WRITE = ['create', 'release', 'delete', 'remove_object', 'reassign', 'release_recursive'];
 
 const SAPGIT_ACTIONS_READ = [
@@ -1541,6 +1541,7 @@ export function getToolDefinitions(
             description:
               "list: show transports (defaults to current user, modifiable only). Pass summary=true for a headers-only overview that omits each transport's object lists (keeps an objectCount) — far cheaper when many transports are open. " +
               'get: fetch transport details including tasks and objects. ' +
+              'diff: what a transport CHANGED — per object, the revision written under it vs the one before, as diff hunks (get only lists names). LIMU entries roll up to their class; an open transport compares to the last released revision. Read baselineStatus first: prior-revision = solid; prior-revision-unverified = pair guessed, may be another change; no-prior-snapshot = created here; baseline-ambiguous = no baseline, so an all-additions block is NOT proof of creation; baseline-unavailable = the read FAILED, never call that unchanged. ' +
               'create: create a new transport request (description required). To target another system, pass target=<system | system.client | /group/> (the Transportziel / TR_TARGET, e.g. "/TRG/" or "C11"; the group and system.client forms require extended transport control to be active). Otherwise omit target and pass an optional package to let SAP infer the route (defaults to $TMP). The response reports the resolved transport target; an empty target means a LOCAL request (cannot be transported onward). ' +
               'release: release a single transport or task. ' +
               'delete: delete a transport (use recursive=true to delete tasks first; removeLockedObjects=true to strip locked objects that otherwise block deletion with "...contains locked objects"). ' +
@@ -1555,8 +1556,10 @@ export function getToolDefinitions(
           id: {
             type: 'string',
             description:
-              'Transport request ID, e.g. A4HK900123 (required for get/release/delete/reassign/release_recursive/remove_object)',
+              'Transport request ID, e.g. A4HK900123 (required for get/diff/release/delete/reassign/release_recursive/remove_object)',
           },
+          offset: { type: 'number', description: 'diff: first object to diff (default 0).' },
+          limit: { type: 'number', description: 'diff: objects per call (default 20, max 40); page with offset.' },
           description: { type: 'string', description: 'Transport description text (required for create)' },
           name: { type: 'string', description: 'Object name (for check, history, or remove_object actions)' },
           package: {
