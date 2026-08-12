@@ -146,6 +146,16 @@ function buildBaseErrorMessage(
     }
 
     if (err.isNotFound) {
+      if (err.resourceExistenceAfterDelete === 'exists') {
+        return (
+          `${enriched}\n\n` +
+          "Hint: ARC-1 confirmed this object still existed after SAP rejected DELETE, so this 404 means SAP's delete handler rejected the operation rather than that the object was absent."
+        );
+      }
+      if (err.resourceExistenceAfterDelete === 'unknown') {
+        const name = String(args.name ?? '');
+        return `${enriched}\n\nHint: SAP returned 404 after DELETE, but ARC-1 could not determine whether the object still exists because the follow-up metadata check failed. Use SAPSearch with query "${name}" to verify the current object state before retrying DELETE.`;
+      }
       const diagnosticsHint = buildDiagnosticsNotFoundHint(tool, args);
       if (diagnosticsHint) {
         return `${enriched}\n\nHint: ${diagnosticsHint}`;
