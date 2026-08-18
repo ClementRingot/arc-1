@@ -1,5 +1,24 @@
 # Updating ARC-1
 
+## Unreleased — CLI/CI hardening compatibility changes
+
+The CLI/CI hardening release intentionally tightens several automation contracts. Treat these as
+breaking changes when moving an existing pipeline:
+
+| Area | Change | Migration |
+|---|---|---|
+| SAPGit | The unimplemented `commit` action is no longer advertised or accepted. All gCTS mutation names remain quarantined before HTTP. Accepted-but-unverifiable abapGit mutations return error/incomplete instead of optimistic success. | Use `push` for abapGit commits. Inspect repository/remote state before retrying any incomplete mutation. Do not depend on gCTS writes until the staged import/deploy design ships. |
+| SAPGit `description` | The gCTS-only `description` parameter was removed with the unavailable `commit` action; strict input validation now rejects it. | Drop `description` from SAPGit callers. Use the staging comment supported by the abapGit `push` flow when applicable. |
+| Recursive CTS release | `release_recursive` requires `SAP_ALLOWED_TRANSPORTS` to be the legacy unrestricted empty value or explicit `*`; exact/prefix lists cannot safely authorize a subtree that may gain a concurrent task. Success now waits for terminal CTS evidence; released tasks may be folded out of SAP's organizer tree and are confirmed by their accepted release or the terminal parent. | Use single `release` with exact transport grants, or explicitly authorize every current/concurrent child with `*` for recursive release. Set `timeoutSeconds` when the five-minute default is unsuitable. |
+| Git egress | `SAPGit.external_info` now requires `git` scope plus `SAP_ALLOW_WRITES=true` and `SAP_ALLOW_GIT_WRITES=true`; Git URLs must be HTTPS and credential-free. | Move credentials out of URLs and enable the egress/write gates only on the instance intended to contact remote Git hosts. |
+| Revision and diagnostic links | Caller-provided ADT links are restricted to canonical endpoint-specific paths. | Pass the exact revision/gateway/AUnit URI returned by ARC-1 or SAP; arbitrary `/sap/bc/adt/**` paths, traversal, and ambiguous encodings are rejected. |
+| Dedicated CI checks | Non-evaluable AUnit/ATC/diff/lint evidence exits `3`; tool/SAP failures exit `1`; usage/config validation exits `2`. | Preserve the process exit code alongside JSON, JUnit, or Checkstyle reports and handle exit `3` as incomplete rather than success. |
+| Dedicated lint preset | `arc1 lint` now uses ARC-1's CLI-safe abaplint preset instead of inheriting a repository-specific default config. Existing files may change from red to green when they only violated rules outside that preset. | Pass `SAP_ABAPLINT_CONFIG` when the CI job must enforce a repository-specific rule set. |
+| CLI parsing | Unknown commands/options, missing values, and extra positional arguments are now usage errors instead of falling through to the default server command. | Fix misspelled commands and pass every boolean flag with an explicit value, such as `--allow-writes=true`. |
+
+The generic `arc1 call` command keeps MCP `ToolResult` semantics. The stricter domain exit codes apply
+to the dedicated `unittest`, `atc`, `diff`, and `lint` commands.
+
 ## v1.0 — upgrading from 0.9.x
 
 From `1.0` ARC-1 follows [semantic versioning](https://semver.org/): a breaking change to the MCP tool
@@ -118,7 +137,10 @@ Added two new scopes: `transports`, `git`. `admin` now **implies all other scope
 cf update-service arc1-xsuaa -c xs-security.json
 ```
 
-Users assigned to `ARC-1 Developer` role collection automatically gain transport and git write capability. If you want "developer without CTS/Git", create your own role template referencing just `[read, write]`.
+Users assigned to `ARC-1 Developer` role collection automatically gain transport scope and the gated
+abapGit mutation/egress scope when the matching server flags are enabled. gCTS mutations remain
+quarantined before HTTP, and unverifiable accepted abapGit actions return error/incomplete. If you
+want "developer without CTS/Git", create your own role template referencing just `[read, write]`.
 
 ### Migration steps
 
