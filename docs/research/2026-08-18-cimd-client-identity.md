@@ -477,6 +477,12 @@ outbound traffic at all. Document prominently that `client_name` is attacker-cho
 be presented as a trusted identity. This mirrors the curated model (Clerk's explicit per-URL
 authorization) while defaulting to the spec's intent once an admin has opted in.
 
+**One caveat, added after implementation.** This recommendation rests on address validation doing
+the real SSRF work. That holds for a direct connection and for the tunnelled proxy path
+(Option C), but it would not hold under an unpinned proxy fallback — see
+[Proxied deployments](#proxied-deployments), where the allowlist would stop being optional and
+become the only remaining control.
+
 ### Q4 — cache
 
 Constraints: ARC-1 is stateless by design; the existing rate limiters are per-instance and in
@@ -696,25 +702,107 @@ only a comment recording that CIMD is intentionally a no-op, and a test that pin
 A single-purpose module. Not a general HTTP client, and not exported for other use.
 
 ```text
-fetchClientIdMetadataDocument(url, opts) → { ok: true, body } | { ok: false, reason }
-  reason ∈ scheme | userinfo | shape | host_not_allowed | dns_failure
+fetchClientIdMetadataDocument(url, opts) → { ok: true, body, cacheControl?, expires? }
+                                         | { ok: false, reason }
+  reason ∈ scheme | userinfo | shape | blocked_host | host_not_allowed | dns_failure
          | blocked_address | redirect_refused | tls_failure | timeout
-         | too_large | bad_status | bad_content_type
+         | too_large | bad_status | bad_content_type | content_encoding_refused
+         | network_error
+         | proxy_config_invalid | proxy_unreachable | proxy_refused
 ```
 
-- `https` only; no userinfo; no fragment; path required; no dot segments.
+Delivered in `@arc-mcp/xsuaa-auth` as `src/cimd-fetch.ts`. Four reasons were added during
+implementation and are not in the original sketch above: `blocked_host` (an internal-only name or
+IP-literal target, refused pre-DNS, which deserves its own audit signal rather than hiding inside
+`shape`), `content_encoding_refused` (a compression bomb is a distinct threat from a wrong content
+type), `network_error` (an ordinary socket failure), and the three `proxy_*` reasons discussed
+under [Proxied deployments](#proxied-deployments).
+
+- `https` only; no userinfo; no fragment; path required; no dot segments — the dot-segment check
+  runs on the **raw string**, because `new URL()` resolves `a/../b` away during parsing and a check
+  against `pathname` is dead code. Percent-encoded spellings (`%2e%2e`) are covered.
 - Resolve, validate **every** address against the RFC 6890 block set, pin the connection.
 - Redirects refused.
 - Connect timeout ~2 s, global deadline ~5 s, both configurable and clamped.
 - Streaming size cap at 5 KiB; `Content-Encoding` refused; status must be exactly 200; content type
   must be JSON or `+json`.
 - No credentials of any kind; a fixed, non-identifying `User-Agent`.
-- Reasons are for audit only. The caller-visible error is generic.
+- Reasons are for audit only. The caller-visible error is generic, and a failure result carries
+  **only** the reason — no exception text, no address, no hostname — so no topology can leak.
+- Built on `node:https` rather than `undici`: a custom `lookup` is the exact pinning seam, Node
+  core never auto-follows redirects, and it never auto-decompresses. `undici` is not a dependency
+  of the auth package, so this also adds none.
 
 Reuse `literalHostIsPrivate` from `src/adt/abapgit.ts` as the range-checking core — either lifted
 into the package or duplicated with a comment pointing at the original and a shared test vector
 list. Duplication with a pinned test corpus is acceptable here and preferable to exporting an
 `adt/` internal across a package boundary; the vectors are the thing that must not drift.
+
+### Proxied deployments
+
+Some deployments — typically self-hosted or Docker inside a locked-down corporate network, rather
+than BTP Cloud Foundry, which normally has direct egress — permit outbound traffic only through a
+mandatory forward proxy. This interacts badly with the design, because **pinning a connection and
+delegating a connection are structurally incompatible**: hand a proxy a hostname and the proxy, not
+this process, resolves the name and chooses the peer, so a `CONNECT` aimed at an internal host
+sails past every address check. Naive proxy support would silently downgrade the SSRF control to
+"whatever the proxy's egress policy happens to allow".
+
+Three ways out were considered.
+
+**Option C — tunnel to the validated IP. Implemented.** Resolve and validate the address here, then
+ask the proxy for a tunnel to that **IP**: `CONNECT 93.184.216.34:443`, never
+`CONNECT client.example.com:443`. The proxy resolves nothing and substitutes nothing; it only opens
+a pipe to an address this process already approved. TLS is then terminated locally inside the
+tunnel with SNI and certificate validation bound to the real hostname. **The pin survives the
+proxy**, which is what makes this the right answer rather than a compromise.
+
+Two operator-visible consequences, both intentional:
+
+- A proxy that refuses `CONNECT` to a bare IP — many policy-enforcing proxies do, because their
+  filtering and logging want a name — cannot be used. That surfaces as `proxy_refused`, never as a
+  silent downgrade to a direct or unpinned connection.
+- A **TLS-intercepting** proxy fails certificate validation, because the certificate presented is
+  the interceptor's. Failing is the correct outcome; such a deployment must trust the interception
+  CA at process level (`NODE_EXTRA_CA_CERTS`) as an explicit, visible operator decision.
+
+The proxy's own address is deliberately **exempt** from the RFC 6890 block set. A corporate proxy
+legitimately lives on `10.x` or `127.0.0.1`, and it is operator-configured infrastructure; the
+untrusted input in this design is the target, never the egress hop. Proxy credentials
+(`http://user:pass@proxy`) ride the `CONNECT` only and never enter the tunnel, so the request to
+the client's host stays unauthenticated.
+
+The proxy URL is an explicit option rather than an implicit read of `HTTPS_PROXY`. Whether egress is
+proxied is a deployment policy the consumer owns, and a transport that changes shape because an
+environment variable happens to be set is exactly the kind of surprise this module exists to avoid.
+A `proxyFromEnvironment()` helper (with `NO_PROXY` handling) lets `arc-1` opt in explicitly at T3.
+
+**Option E — a locally supplied document mirror. Not implemented; documented as the airgapped
+path.** An administrator supplies the CIMD documents out of band for the clients the deployment
+supports. There is no outbound request at all, so the entire SSRF surface disappears, while the
+benefit that matters is retained: `client_id` values that are stable URLs, immune to signing-key
+rotation. It is a deliberate deviation from the draft, which requires the authorization server to
+fetch, and it carries a staleness risk when a client rotates its redirect URIs. For a closed
+enterprise deployment with a fixed client set it is coherent, and it is simply the curated
+admission model of [Q3](#q3--admission-policy) taken to its conclusion. Build it only if a customer
+needs it.
+
+**Option A — proxy without pinning, plus a mandatory allowlist. Rejected in favour of C**, but kept
+as the fallback if a customer's proxy refuses IP `CONNECT`. It is a different security model, not a
+weaker version of the same one, so it would have to be opt-in and explicit — never a silent
+fallback when C fails.
+
+**This changes the answer to [Q3](#q3--admission-policy) for one class of deployment.** The
+recommendation there — allowlist optional, empty by default — rests on address validation doing the
+real work. Under Option A that validation does not exist, so the host allowlist stops being
+optional and becomes the *only* remaining SSRF control. Option C does not have this problem, which
+is the main reason to prefer it.
+
+**Consequence for [T3](#t3--wiring-arc-1).** The startup guard originally envisaged here was
+"proxy detected + CIMD enabled → refuse to advertise". With Option C implemented that is no longer
+right: a proxied deployment is supported. The guard becomes a configuration-wiring question —
+whether `arc-1` populates `proxyUrl` from the environment — plus a clear diagnostic when the
+`proxy_*` reasons start appearing, since those indicate a proxy that cannot serve this feature.
 
 ### Document validation
 
@@ -819,6 +907,11 @@ To run before and during implementation. Record URLs and verdicts; never record 
 | X15 | Rate limiting incl. the `isCopilotJsonRpc` skip path | No client class reaches an unlimited CIMD fetch |
 | X16 | CIMD backend unreachable | DCR, default client, API key, OIDC all unaffected |
 | X17 | `arc-1` on package ^1.0.2 | Starts, no CIMD, no flag, no errors |
+| X18 | **Real TLS fetch, direct** — a genuine public HTTPS document | Handshake, certificate validation, and the 200 path work end to end. Unit tests stop at the TLS boundary, so this is the one thing they cannot prove |
+| X19 | **Real TLS fetch, tunnelled** — the same through a live forward proxy | `CONNECT <ip>:443` accepted, TLS validates against the real hostname inside the tunnel |
+| X20 | Proxy that refuses `CONNECT` to a bare IP | `proxy_refused`, no downgrade to a direct or unpinned connection |
+| X21 | TLS-intercepting proxy | Certificate validation fails closed; succeeds only once the interception CA is trusted via `NODE_EXTRA_CA_CERTS` |
+| X22 | Dual-stack target (A + AAAA), resolver reordering | The pin holds; the address actually dialled is one that was validated |
 
 ## Implementation roadmap
 
@@ -831,13 +924,22 @@ No code. Re-read the MCP 2026-07-28 authorization section and the IETF draft fro
 an unrestricted network; pin the revision the MCP text cites; confirm the SDK still has no
 server-side support; obtain a decision on Q1–Q5 and on the package change.
 
-### T1 — the hardened fetcher (package)
+### T1 — the hardened fetcher (package) — **delivered, pending review**
 
-The whole security case. Reviewed and merged alone, with no caller. Delivers the module, the
-RFC 6890 range logic reusing the abapGit vectors, resolution + address validation + pinning,
-refused redirects, timeouts, streaming caps, content-type and status checks, and the reason
-vocabulary. Tests X5–X8 plus the abapGit vector corpus. **No other task starts until this is
-reviewed.**
+The whole security case. Merged alone, with no caller. Delivers `src/cimd-fetch.ts` in
+`@arc-mcp/xsuaa-auth`: the RFC 6890 range logic reusing the abapGit vectors, resolution + address
+validation + connection pinning, refused redirects, timeouts, streaming caps, content-type and
+status checks, and the reason vocabulary. 52 tests covering X5–X8 plus the abapGit vector corpus.
+
+Scope grew by one item during implementation: **Option C proxy tunnelling**
+([Proxied deployments](#proxied-deployments)) landed here rather than being deferred, because it is
+a transport concern and belongs beside the pin it preserves.
+
+Two defects were found by the suite and fixed in place: the dot-segment check was dead code against
+`URL.pathname` (the parser resolves the segments away before it runs), and an IP-literal target
+reached the resolver and reported `dns_failure` instead of a precise pre-DNS refusal.
+
+**No other task starts until this is reviewed.**
 
 ### T2 — resolution, validation, cache (package)
 
@@ -849,7 +951,12 @@ no-op comment and its test. Tests X9–X14. Ships as 1.1.0.
 
 Bump to `^1.1.0`. Advertise the flag in **both** metadata modes via `createOAuthMetadata` +
 `metadataHandler` before `mcpAuthRouter`. Add the three configuration variables with source tracing
-and warnings. Add the three audit events. Verify rate-limit coverage including the Copilot skip.
+and warnings. Decide whether `proxyUrl` is populated from `proxyFromEnvironment()` and expose it as
+a fourth setting; the originally planned "proxy detected → refuse to advertise" guard is obsolete
+now that Option C supports proxied deployments, and is replaced by a clear diagnostic when the
+`proxy_*` reasons appear. Add the three audit events, carrying the proxy reasons through
+`redactAuditEvent` — a proxy URL may contain credentials and must never reach a sink.
+Verify rate-limit coverage including the Copilot skip.
 Update `docs_page/enterprise-auth.md` and the configuration reference; `npm run docs:build` (mkdocs
 strict) must pass. Tests X2–X4, X15–X17.
 
