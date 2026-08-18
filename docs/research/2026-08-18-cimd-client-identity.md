@@ -620,8 +620,11 @@ outbound CIMD fetches and a separate per-minute ceiling on **distinct** URLs res
 IP within its request budget still cannot fan out to unlimited destinations. Negative caching and
 single-flight complete the picture.
 
-**Open question for the implementation PR:** whether the CIMD fetch should be deferred until after
-the per-IP limiter has certainly run for every client class, including the Copilot path.
+**Resolved in T3.** `isCopilotJsonRpc` matches only a POST whose body carries `jsonrpc`, and
+`http.ts` diverts exactly those to the MCP handler before the OAuth handler runs — so they never
+reach `getClient` and cannot trigger a fetch. Genuine OAuth `/authorize` traffic and
+`/oauth/callback`, the only two paths that can, are both already inside the per-IP limiter. No
+dedicated cap was needed; the resolver's negative cache and single-flight remain as depth.
 
 ### TH5 — response-body attacks
 
@@ -958,7 +961,7 @@ reached the resolver and reported `dns_failure` instead of a precise pre-DNS ref
 handling, negative entries, and single-flight; `checkRedirectUri` alignment; the `ensureRedirectUri`
 no-op comment and its test. Tests X9–X14. Ships as 1.1.0.
 
-### T3 — wiring (`arc-1`)
+### T3 — wiring (`arc-1`) — **delivered, pending review**
 
 Bump to `^1.1.0`. Advertise the flag in **both** metadata modes via `createOAuthMetadata` +
 `metadataHandler` before `mcpAuthRouter`. Add the three configuration variables with source tracing
@@ -967,7 +970,10 @@ a fourth setting; the originally planned "proxy detected → refuse to advertise
 now that Option C supports proxied deployments, and is replaced by a clear diagnostic when the
 `proxy_*` reasons appear. Add the three audit events, carrying the proxy reasons through
 `redactAuditEvent` — a proxy URL may contain credentials and must never reach a sink.
-Verify rate-limit coverage including the Copilot skip.
+Rate limiting needed no change, and the open question above is answered: `isCopilotJsonRpc`
+matches only a POST carrying a `jsonrpc` body, and those are diverted to the MCP handler before the
+OAuth handler runs, so they never reach `getClient` and cannot trigger a fetch. Both paths that can
+— `/authorize` and `/oauth/callback` — are already inside the per-IP limiter.
 Update `docs_page/enterprise-auth.md` and the configuration reference; `npm run docs:build` (mkdocs
 strict) must pass. Tests X2–X4, X15–X17.
 
