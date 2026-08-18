@@ -319,15 +319,25 @@ CIMD makes it reachable, because a *hosted, static* document is written once and
 ephemeral port of a future run. Any native MCP client using loopback redirects hits this on every
 authorization.
 
-**Proposed resolution.** Make the two ends agree, and let the document's own declaration choose
-which rule applies:
+**Resolution — revised during T2 implementation.** The original proposal was to let the document's
+`application_type` choose the rule: relaxation for `native`, exact comparison otherwise. Reading the
+SDK's `redirectUriMatches` at 1.30.0 showed that to be wrong. The SDK applies the relaxation
+**unconditionally** whenever both URIs are loopback; it never consults `application_type`. Gating on
+it here would therefore make `/oauth/callback` *stricter* than `/authorize` for a `web` document
+that lists a loopback URI — reintroducing exactly the disagreement the alignment exists to remove.
 
-- If the document declares `application_type: "native"` (or omits it and every redirect URI is a
-  loopback URI), CIMD redirect matching uses the **same RFC 8252 loopback relaxation the SDK
-  already applies** — at `/authorize` and at `/oauth/callback` alike.
-- Otherwise, matching is **exact string comparison** per N5.
-- Relaxation is confined to the loopback host, and the scheme, host, path, and query must still
-  match exactly. It never applies to a non-loopback URI.
+What shipped instead is a byte-for-byte mirror of the SDK's comparison, applied to CIMD and DCR
+clients alike:
+
+- Exact string equality, **or** — when both URIs target a loopback host (`localhost`, `127.0.0.1`,
+  `[::1]`) — equality of scheme, host, path and query with the **port** free.
+- `localhost` does not cross-match `127.0.0.1`; relaxation never applies to a non-loopback URI.
+- `application_type` is parsed and recorded for observability, and obeyed by nothing.
+
+Applying it to DCR clients too is a deliberate widening of `checkRedirectUri`, which previously used
+a bare `Array.includes`. It is safe in the strict sense that it cannot admit anything `/authorize`
+had not already accepted: the authorization code has by then been minted for that exact URI, so
+refusing it at the callback prevented no disclosure and merely dropped the code on the floor.
 
 This is a conscious, documented deviation from N5's unqualified "exact match", justified by RFC 8252
 §7.3, which is the long-standing OAuth answer for native applications and is what the SDK, and
@@ -816,7 +826,8 @@ Strict allowlist of fields, everything unknown ignored, everything present bound
 5. `grant_types` / `response_types` intersected with what ARC-1 supports
    (`authorization_code`, `refresh_token`, `code`).
 6. `client_name` optional, length-capped, display-only.
-7. `application_type` optional; consulted only to decide loopback relaxation.
+7. `application_type` optional; recorded for observability only — see the revised resolution in
+   [Conflicts between the draft and the SDK](#conflicts-between-the-draft-and-the-sdk).
 8. Map to `OAuthClientInformationFull` with `client_secret: undefined` and
    `token_endpoint_auth_method: 'none'` — the existing public-client path.
 
@@ -941,7 +952,7 @@ reached the resolver and reported `dns_failure` instead of a precise pre-DNS ref
 
 **No other task starts until this is reviewed.**
 
-### T2 — resolution, validation, cache (package)
+### T2 — resolution, validation, cache (package) — **delivered, pending review**
 
 `getClient` classification and the terminal CIMD branch; document validation; the LRU with RFC 9111
 handling, negative entries, and single-flight; `checkRedirectUri` alignment; the `ensureRedirectUri`
