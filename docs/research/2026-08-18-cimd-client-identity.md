@@ -334,6 +334,15 @@ clients alike:
 - `localhost` does not cross-match `127.0.0.1`; relaxation never applies to a non-loopback URI.
 - `application_type` is parsed and recorded for observability, and obeyed by nothing.
 
+**SEP-837 independently supports this.** The release-candidate post describes it as making clients
+declare `application_type` during DCR *"so authorization servers stop rejecting `localhost`
+redirects for desktop and CLI apps"* — i.e. the failure mode the MCP working group is legislating
+against is an authorization server being **too strict** with loopback redirects for native clients.
+Unconditional relaxation cannot commit that error. Gating on a declaration the SDK never transmits
+could. The reversal therefore lands on the safer side of the SEP's own intent, and the fact that
+SEP-837 attaches `application_type` to *DCR* rather than to CIMD is a further reason not to make
+CIMD behaviour depend on it.
+
 Applying it to DCR clients too is a deliberate widening of `checkRedirectUri`, which previously used
 a bare `Array.includes`. It is safe in the strict sense that it cannot admit anything `/authorize`
 had not already accepted: the authorization code has by then been minted for that exact URI, so
@@ -977,6 +986,22 @@ OAuth handler runs, so they never reach `getClient` and cannot trigger a fetch. 
 Update `docs_page/enterprise-auth.md` and the configuration reference; `npm run docs:build` (mkdocs
 strict) must pass. Tests X2–X4, X15–X17.
 
+### T5 — authorization SEPs this research did not examine
+
+The 2026-07-28 release-candidate post lists six authorization SEPs. Three were analysed here
+(**2468** = RFC 9207 `iss`, **837** = `application_type`, **2352** = issuer binding — all three are
+client-side obligations creating no server work, as recorded above). **Three were not**, and each
+should get its own look before ARC-1 claims conformance with the revision as a whole:
+
+| SEP | Subject | Why it may touch ARC-1 |
+|---|---|---|
+| **2351** | `.well-known` discovery suffix documentation | **Most likely to matter.** T3 mounts a shadowing handler on `/.well-known/oauth-authorization-server` and ARC-1 already serves PRM at several paths, including prefixed and multi-target variants. If the revision pins a suffix convention, those routes need checking against it. |
+| **2207** | Refresh-token guidance for OpenID-Connect-style servers | ARC-1 proxies refresh to XSUAA (`exchangeRefreshToken`) and has a separate OIDC verifier path. |
+| **2350** | Scope accumulation during step-up | ARC-1 expands and enforces MCP scopes (`ACTION_POLICY`, `expandScopes`); step-up semantics were never considered. |
+
+None of these blocks the CIMD work — they are orthogonal to client identity. They are listed so the
+gap is explicit rather than silently assumed away.
+
 ### T4 — unified redirect policy (measure first)
 
 SEC-15 observed that DCR validates redirect URIs at registration but later trusts the signed
@@ -1036,6 +1061,17 @@ it. No stored state to migrate, no wire format to version.
 - MCP specification, revision 2026-07-28 — authorization
   (<https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization>) — **re-read
   directly; blocked by egress policy during this research**
+- **The 2026-07-28 Specification** — <https://blog.modelcontextprotocol.io/posts/2026-07-28/>. This
+  is the load-bearing citation, verified verbatim: *"Dynamic Client Registration itself is now
+  formally deprecated in favor of CIMD. DCR continues to work for backward compatibility, but will
+  be removed in a future version of the MCP spec."* and *"A formal deprecation policy with a
+  twelve-month minimum window."*
+- **The 2026-07-28 Release Candidate** — <https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/>.
+  ⚠️ Do NOT cite this one for CIMD: the RC post **does not mention CIMD at all**. It covers six
+  other authorization SEPs (2468, 837, 2352, 2207, 2350, 2351). CIMD appears only in the final
+  specification post above. Neither post names SEP-991 or
+  `client_id_metadata_document_supported` — those come from SEP-991's own issue and from the SDK
+  source, both verified directly.
 - SEP-991, URL-based client registration via CIMD —
   <https://github.com/modelcontextprotocol/modelcontextprotocol/issues/991>
 - `draft-ietf-oauth-client-id-metadata-document`, revision **-02**, working-group source —
