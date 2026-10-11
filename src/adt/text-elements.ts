@@ -15,6 +15,7 @@ import { activate } from './devtools.js';
 import { AdtApiError, AdtError } from './errors.js';
 import type { AdtHttpClient } from './http.js';
 import { checkOperation, OperationType, type SafetyConfig } from './safety.js';
+import { textPartChanges } from './text-part-changes.js';
 import { parseXml } from './xml-parser.js';
 
 /** Media type per subobject. Each is used as BOTH Content-Type and Accept on the write PUT (SAP
@@ -130,6 +131,7 @@ export async function readTextElements(
 }
 
 /** Write one part, unlock, then activate only the text pool in the same stateful session.
+ *  Compare native bodies under the lock to report what the replacement removed.
  *  PUT uses the part's media type as BOTH Content-Type and Accept. SAP refuses activation
  *  while the pool is locked; a source read alone cannot distinguish its inactive version.
  *  A never-activated PROG still needs its first owner activation to activate the texts. */
@@ -141,7 +143,7 @@ export async function writeTextElementPart(
   part: TextElementPart,
   source: string,
   transport?: string,
-): Promise<void> {
+): Promise<string> {
   checkOperation(safety, OperationType.Update, 'WriteTextElements');
   assertPart(objectType, part);
   if (objectType === 'CLAS' && part !== 'symbols') {
@@ -153,24 +155,42 @@ export async function writeTextElementPart(
   }
   assertTextElementsService(http, objectType);
   const obj = textElementsObject(objectType, name);
+  let changes = '';
   await http.withStatefulSession(async (session) => {
     const lock = await lockObject(session, safety, obj, 'MODIFY');
     const corr = transport ?? (lock.corrNr || undefined);
+    let saved = false;
     try {
-      let url = `${obj}/source/${part}?lockHandle=${encodeURIComponent(lock.lockHandle)}`;
-      if (corr) url += `&corrNr=${encodeURIComponent(corr)}`;
-      await session.put(url, source, TEXT_ELEMENT_CT[part], { Accept: TEXT_ELEMENT_CT[part] });
-    } finally {
-      await unlockObject(session, obj, lock.lockHandle);
+      try {
+        const before = await readTextElementPart(session, safety, objectType, name, part);
+        let url = `${obj}/source/${part}?lockHandle=${encodeURIComponent(lock.lockHandle)}`;
+        if (corr) url += `&corrNr=${encodeURIComponent(corr)}`;
+        await session.put(url, source, TEXT_ELEMENT_CT[part], { Accept: TEXT_ELEMENT_CT[part] });
+        saved = true;
+        const after = await readTextElementPart(session, safety, objectType, name, part);
+        changes = textPartChanges(part, before, after);
+      } finally {
+        await unlockObject(session, obj, lock.lockHandle);
+      }
+    } catch (err) {
+      if (saved) {
+        throwTextPoolFailure(
+          err,
+          'Text elements were saved, but read-back or activation was not confirmed. Read the part before retrying.' +
+            changes,
+        );
+      }
+      throw err;
     }
     await activateTextPool(
       session,
       safety,
       obj,
       name,
-      'Text elements were saved, but activation was not confirmed. Retry the same text write.',
+      `Text elements were saved, but activation was not confirmed. Retry the same text write.${changes}`,
     );
   });
+  return changes;
 }
 
 /** Activate one text-pool URI only; on failure, prefix `note` to the error and keep it as the hint. */
@@ -188,13 +208,15 @@ export async function activateTextPool(
       throw new AdtApiError(result.messages.join('\n') || 'Text-pool activation failed.', 400, uri);
     }
   } catch (err) {
-    // The dispatcher retains this static hint when minimal errors hide SAP diagnostics.
-    if (err instanceof AdtError && !err.extraHint) err.extraHint = note;
-    if (err instanceof Error) {
-      err.message = `${note}\n${err.message}`;
-    }
-    throw err;
+    throwTextPoolFailure(err, note);
   }
+}
+
+/** Keep confirmed save state visible even when minimal errors hide SAP diagnostics. */
+function throwTextPoolFailure(err: unknown, note: string): never {
+  if (err instanceof AdtError) err.extraHint = err.extraHint ? `${note}\n${err.extraHint}` : note;
+  if (err instanceof Error) err.message = `${note}\n${err.message}`;
+  throw err;
 }
 
 /** Caller already holds the owner lock in this session. The pool has an independent lock:

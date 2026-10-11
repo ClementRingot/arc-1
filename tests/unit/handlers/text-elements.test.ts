@@ -536,3 +536,125 @@ describe('PROG/FUGR deletion preserves inactive text pools', () => {
     expect(steps()).toEqual(['LOCK', 'DELETE', 'UNLOCK']);
   });
 });
+
+describe('text-part removal reports', () => {
+  const before = 'P_TEST  =Original label\r\n\r\n@DDICReference\r\nP_USER  =User Name\r\n\r\nP_EMPTY =?...';
+  const after = 'P_USER  =Fixed name\r\n\r\nP_TEST  =?...\r\n\r\nP_EMPTY =?...';
+
+  function mockPart(old: string, next: string, failure?: 'before' | 'put' | 'after' | 'unlock' | 'activation') {
+    let reads = 0;
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      const path = String(url);
+      const method = init?.method ?? 'GET';
+      if (path.includes('_action=LOCK')) return Promise.resolve(mockResponse(200, LOCK));
+      let fail = false;
+      let body = '';
+      if (path.includes('/source/') && method === 'GET') {
+        reads++;
+        body = reads === 1 ? old : next;
+        fail = failure === (reads === 1 ? 'before' : 'after');
+      }
+      if (method === 'PUT') fail = failure === 'put';
+      if (path.includes('_action=UNLOCK')) fail = failure === 'unlock';
+      if (path.includes('/activation')) fail = failure === 'activation';
+      return Promise.resolve(
+        mockResponse(fail ? 400 : 200, fail ? '<exception><message>Denied</message></exception>' : body, {
+          'x-csrf-token': 'T',
+        }),
+      );
+    });
+  }
+  const write = (source = 'p_user=Fixed name', minimalErrors = false, part = 'selections') =>
+    handleToolCall(createClient(), { ...DEFAULT_CONFIG, allowWrites: true, minimalErrors }, 'SAPWrite', {
+      action: 'edit_text_symbols',
+      type: 'PROG',
+      name: 'ZTEST',
+      textPart: part,
+      source,
+    });
+  const steps = () =>
+    calls()
+      .filter(([url]) => /textelements|\/activation/.test(String(url)))
+      .map(([url, init]) =>
+        String(url).includes('_action=LOCK')
+          ? 'LOCK'
+          : String(url).includes('_action=UNLOCK')
+            ? 'UNLOCK'
+            : String(url).includes('/activation')
+              ? 'ACTIVATE'
+              : (init?.method ?? 'GET'),
+      );
+
+  beforeEach(() => vi.resetAllMocks());
+
+  it('uses canonical SAP read-back for lowercase input and reports only actual losses', async () => {
+    mockPart(before, after);
+    const result = await write();
+    expect(result.isError).toBeUndefined();
+    const message = result.content[0]?.text;
+    expect(message).toContain('Removed texts: P_TEST.');
+    expect(message).toContain('Removed dictionary references: P_USER.');
+    expect(message).toContain('resend the previous complete part');
+    expect(message).not.toContain('Removed texts: P_USER');
+    expect(message).not.toContain('P_EMPTY');
+    expect(steps()).toEqual(['LOCK', 'GET', 'PUT', 'GET', 'UNLOCK', 'ACTIVATE']);
+    for (const [, request] of calls().filter(([url]) => String(url).includes('/textelements/'))) {
+      expect(request.headers).toMatchObject({ 'X-sap-adt-sessiontype': 'stateful' });
+    }
+  });
+
+  it('does not claim a removed dictionary label became fixed text', async () => {
+    mockPart(before, 'P_USER=?...\nP_TEST=Original label\nP_EMPTY=?...');
+    const result = await write('P_TEST=Original label');
+    expect(result.content[0]?.text).toContain('Removed texts: P_USER.');
+    expect(result.content[0]?.text).toContain('Removed dictionary references: P_USER.');
+    expect(result.content[0]?.text).not.toContain('fixed text');
+  });
+
+  it('does not add a report when SAP retains every text and dictionary reference', async () => {
+    mockPart(before, before.replace('Original label', 'Changed label'));
+    const result = await write('p_test=Changed label\n@DDICReference\np_user=');
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0]?.text).not.toMatch(/Removed|restore/);
+  });
+
+  it.each([
+    ['symbols', '@MaxLength:20\n001=First\n\n@MaxLength:20\n002=', '', '001, 002'],
+    ['symbols', '@MaxLength:20\n001=First', '@MaxLength:20\n001=', '001'], // SAP retains the emptied key.
+    [
+      'headings',
+      'listHeader=Header\ncolumnHeader_1=First\ncolumnHeader_2=',
+      'listHeader=\ncolumnHeader_1=First\ncolumnHeader_2=',
+      'listHeader',
+    ],
+    ['selections', before, 'P_TEST=?...\nP_USER=?...\nP_EMPTY=?...', 'P_TEST, P_USER'],
+    ['selections', before, 'P_USER=Fixed name', 'P_TEST'], // FUGR omits removed keys.
+  ])('reports cleared %s entries and ignores empty placeholders', async (part, old, next, keys) => {
+    mockPart(old, next);
+    const result = await write(next, false, part);
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0]?.text).toContain(`Removed texts: ${keys}.`);
+  });
+
+  it.each(['before', 'put'] as const)('unlocks on %s failure without claiming a saved replacement', async (failure) => {
+    mockPart(before, after, failure);
+    const result = await write();
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).not.toMatch(/were saved|Removed texts/);
+    expect(steps()).toEqual(failure === 'before' ? ['LOCK', 'GET', 'UNLOCK'] : ['LOCK', 'GET', 'PUT', 'UNLOCK']);
+  });
+
+  it.each(['after', 'unlock', 'activation'] as const)(
+    'keeps saved state on %s failure, even with minimal errors',
+    async (failure) => {
+      mockPart(before, after, failure);
+      const result = await write(undefined, true);
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toContain('Text elements were saved');
+      if (failure !== 'after') expect(result.content[0]?.text).toContain('Removed texts: P_TEST.');
+      else expect(result.content[0]?.text).not.toContain('Removed texts:');
+      expect(steps().includes('ACTIVATE')).toBe(failure === 'activation');
+      expect(steps()).toContain('UNLOCK');
+    },
+  );
+});

@@ -286,7 +286,7 @@ export async function writeActionDelete(ctx: SapWriteContext): Promise<ToolResul
  *  `textPart` selects it: symbols (`@MaxLength:NN` then `NNN=text`), selections (a report's
  *  selection texts, `P_PARAM=Label` per line), headings (`listHeader=`, `columnHeader_N=`).
  *  ARC-1 supports only symbols for classes. The client writes and requests text-pool activation.
- *  The client locks, PUTs, unlocks, then activates; the package gate here checks
+ *  The client locks, reads, PUTs, reads back, unlocks, then activates; the package gate here checks
  *  the owning object's real package (ctx.objectUrl). Not an ABAP-source write → no lint. */
 export async function writeActionEditTextSymbols(ctx: SapWriteContext): Promise<ToolResult> {
   const {
@@ -317,22 +317,23 @@ export async function writeActionEditTextSymbols(ctx: SapWriteContext): Promise<
     return errorResult(`source is required for edit_text_symbols — the ${part} body, e.g. ${TEXT_PART_EXAMPLE[part]}.`);
   }
   await enforcePackageForExistingObject();
+  let changes: string;
   try {
-    await client.writeTextElementPart(type, name, part, source, transport);
+    changes = await client.writeTextElementPart(type, name, part, source, transport);
   } finally {
     // A successful PUT can leave a draft even if the subsequent activation fails.
     invalidateWrittenObject();
   }
   if (type === 'PROG') {
     return textResult(
-      `Updated ${part} of PROG ${name}; text-pool activation requested.\n` +
+      `Updated ${part} of PROG ${name}; text-pool activation requested.${changes}\n` +
         `If ${name} has never been activated, use SAPActivate(type="PROG", name="${name}") to activate these texts.`,
     );
   }
   if (type === 'FUGR') {
-    return textResult(`Updated ${part} of FUGR ${name}; text-pool activation requested.`);
+    return textResult(`Updated ${part} of FUGR ${name}; text-pool activation requested.${changes}`);
   }
-  return textResult(`Updated and activated ${part} of ${type} ${name}.`);
+  return textResult(`Updated and activated ${part} of ${type} ${name}.${changes}`);
 }
 
 /** One-line body example per subobject, used in the missing-source error so the caller can retry
