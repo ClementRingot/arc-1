@@ -269,6 +269,7 @@ How ARC-1 itself listens for MCP traffic.
 | `--server-name` | `ARC1_SERVER_NAME` | `arc-1` | Server name advertised in the MCP `initialize` handshake. Give each direct-connect instance a unique name when running several ARC-1 instances so clients can derive a target-specific tool prefix without numeric collision suffixes. |
 | `--system-label` | `ARC1_SYSTEM_LABEL` | empty | Optional human-readable label of the connected SAP system (for example `ERP production (read-only)`). It is normalized to one line, limited to 160 characters, and prepended to the single-target MCP instructions so a model can distinguish instances even when a client replaces the handshake name with an opaque connector ID. Ignored in multi-target mode, whose target-aware instructions remain authoritative. |
 | `--http-addr` | `ARC1_HTTP_ADDR` / `SAP_HTTP_ADDR` | `0.0.0.0:8080` | Bind address for HTTP streamable. Use `127.0.0.1:3000` to restrict to localhost. `SAP_HTTP_ADDR` is the legacy fallback name. |
+| `--max-http-request-bytes` | `ARC1_MAX_HTTP_REQUEST_BYTES` | `102400` (100 KiB) | Maximum decompressed MCP JSON body, including Copilot's `/authorize` alias; integer 1–16777216 (16 MiB). Oversized bodies return JSON 413. Other JSON/form endpoints retain 100 KiB. See [HTTP request bodies](#http-request-bodies) for admission and memory limits. |
 | `--port` | `ARC1_PORT` | `8080` | Simpler alternative when only the port needs to change. Wins over `ARC1_HTTP_ADDR`'s port if both are set. Valid range `1–65535`. |
 | `--ui[=MODE]` | `ARC1_UI` | `off` | Experimental read-only browser console. `off` disables it. `local` starts a loopback sidecar UI at `ARC1_UI_ADDR` for stdio/Claude-style local use. `web` mounts `/ui` and `/ui/api/*` on the HTTP server and requires an admin API key, OIDC, or XSUAA auth. `true` maps to `local` for stdio and `web` for HTTP. |
 | `--ui-addr` / `--ui-port` | `ARC1_UI_ADDR` / `ARC1_UI_PORT` | `127.0.0.1:8711` | Bind address for `ARC1_UI=local`. Local mode must stay on loopback; use `ARC1_UI=web` with `SAP_TRANSPORT=http-streamable` for Docker or CF exposure. |
@@ -290,6 +291,19 @@ before increasing either value.
 The UI is experimental, off by default, and inspection-only in v1: sanitized config, safety/auth state, feature-probe status, cache counts/source metadata, and recent sanitized audit events. It does not expose writes, config mutation, cache mutation, feature probes, or cached ABAP source bodies. In HTTP mode, ARC-1 refuses `ARC1_UI=web` unless an admin API key, OIDC, or XSUAA auth is configured, and every `/ui/*` route requires an `admin`-scoped bearer token. When `ARC1_UI=off`, no `/ui` static or API routes are mounted. On BTP CF, use `mta-ui-approuter.mtaext` for browser login via SAP AppRouter.
 
 ARC-1 also sets standard browser security headers (HSTS, CSP, X-Frame-Options, COOP, etc.) on every HTTP response via [helmet](https://helmetjs.github.io/). These are always-on; there's no flag to disable them. Full list and rationale in [Security Guide §11](security-guide.md#11-network-security).
+
+### HTTP request bodies
+
+Before parsing, a request reserves its uncompressed `Content-Length`, capped at the
+configured limit. Unknown or compressed lengths reserve the full limit. Only
+reservations above 100 KiB count toward a shared 32 MiB budget; excess requests
+receive 503 with `Retry-After`. Small requests with an uncompressed declared length
+remain available; small chunked or compressed requests can still exhaust capacity.
+
+Reservations end on response completion or disconnect. A disconnected tool may
+retain its input until dispatch completes, so this is an admission limit, not a
+live-memory bound. Slow unauthenticated uploads can hold large-body capacity: set
+proxy body/read timeouts and measure memory before raising the limit.
 
 ### Rate limiting
 

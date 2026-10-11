@@ -367,7 +367,7 @@ Every match in the result set is stamped with an `_origin: 'adt' | 'db'` field s
 
 ## SAPWrite
 
-HTTP requests currently have a 100 KiB JSON body limit. Large source payloads or batches can receive HTTP 413 before tool dispatch; split batches or use method/section edits. The data-preview response limit is separate. Stdio does not use this HTTP parser.
+HTTP JSON requests default to 100 KiB. For large source writes, an administrator can set `ARC1_MAX_HTTP_REQUEST_BYTES` (maximum 16 MiB); see [request limits](configuration-reference.md#http-request-bodies). HTTP 413 reports the byte limit; HTTP 503 asks the client to retry when the shared input budget is full. Smaller batches and method/section edits reduce both payload and memory use. Data-preview response limits are separate; stdio does not use this parser.
 
 Create or update ABAP source code. Handles lock/modify/unlock automatically.
 

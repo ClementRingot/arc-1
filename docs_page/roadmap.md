@@ -108,7 +108,6 @@ sequence.
 | [OPS-02](#ops-02) | Bounded deep health check | P3 | S | Needs research | Operations |
 | [OPS-05](#ops-05) | SAP Cloud Logging and OpenTelemetry | P2 | L | Revisit on trigger | Operations |
 | [OPS-06](#ops-06) | Per-user SAP session reuse over HTTP | P2 | M | Needs research | Operations |
-| [OPS-07](#ops-07) | Bounded HTTP request sizes for large source edits | P2 | S | Needs research | Operations |
 | [FEAT-07](#feat-07) | Native TLS listener | P3 | M | Revisit on trigger | Operations |
 | [DOC-02](#doc-02) | Basis administrator handbook | P2 | M | Ready | Documentation |
 
@@ -890,21 +889,6 @@ token lifetime, keep users isolated, and keep ADR-0007's request-local Basic cre
 Specify credential revocation and an absolute reuse lifetime before extending the sharing model;
 the single-target transport's bounded reuse and remaining revocation limitations are documented in
 [security-model R21](https://github.com/arc-mcp/arc-1/blob/main/docs/security-model.md#r21-shared-login-credential-freshness).
-
-<a id="ops-07"></a>
-### OPS-07 — Bounded HTTP request sizes for large source edits
-
-- **Priority / effort / status:** P2 / S / Needs research
-- **Category:** Operations
-
-**Remaining gap.** The HTTP server uses Express's default 100 KiB JSON body limit. Large source
-writes or batches can fail with HTTP 413 before tool dispatch, even when a reverse proxy permits
-larger bodies. Smaller edits or local stdio are current workarounds; see [SAPWrite](tools.md#sapwrite).
-The limitation was confirmed during [PR #793](https://github.com/arc-mcp/arc-1/pull/793)'s docs review.
-
-**Resume with.** Define a bounded request-size contract and useful client errors before raising the
-limit. Review parsing before authentication, concurrent memory use, and proxy limits; test both
-oversized rejection and an authenticated large-source write/read-back round trip.
 
 <a id="feat-07"></a>
 ### FEAT-07 — Native TLS listener
