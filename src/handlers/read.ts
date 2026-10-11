@@ -237,6 +237,12 @@ export async function handleSAPRead(
     }
   }
 
+  if (type === 'SMBC') {
+    if (!name) return errorResult('"name" is required for SAPRead type=SMBC.');
+    const version = args.version === 'active' || args.version === 'inactive' ? args.version : undefined;
+    return textResult((await client.getSmbc(name, version)).source);
+  }
+
   // Types in SDO_REGISTRY use the discovery-gated engine for metadata and JSON or DDL-text source.
   // Preserve the unversioned developer view for omitted/auto; explicit selection is checked by SAP metadata.
   if (isServerDrivenObjectType(type)) {

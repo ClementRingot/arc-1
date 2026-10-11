@@ -331,13 +331,6 @@ const KTD_REF_OBJECT_TYPES_ROUTABLE_BY_ARC = new Set([
   'SRVD/SRV',
 ]);
 
-// Parent types without a canonical ARC-1 object type (no objectBasePath case); the KTD parent
-// adtcore:uri is built from this base path. SMBC = Business Configuration Maintenance Object,
-// ADT returns /sap/bc/adt/bct/smbctyp/<name> for it (e.g. in package object listings).
-const KTD_PARENT_BASE_PATHS: Record<string, string> = {
-  SMBC: '/sap/bc/adt/bct/smbctyp/',
-};
-
 // Live WBOBJTYPES_SCOPE registry entries for SCOPE_ID = 'DOCUMENTATION' observed on
 // SAP_BASIS 758 and 816. This is diagnostic evidence, not a create allowlist:
 // KTD create still needs a verified ADT parent URI route for <sktd:refObject>.
@@ -603,7 +596,7 @@ export async function writeActionCreate(ctx: SapWriteContext): Promise<ToolResul
     }
     // Build the parent URI. ADT URIs use lowercase names by convention (matches the Eclipse trace).
     const refParentType = refType.split('/')[0] ?? '';
-    const refUri = `${KTD_PARENT_BASE_PATHS[refParentType] ?? objectBasePath(refParentType)}${encodeURIComponent(refName.toLowerCase())}`;
+    const refUri = `${objectBasePath(refParentType)}${encodeURIComponent(refName.toLowerCase())}`;
 
     const ktdLang = normalizeAdtLanguage(config.language);
     const ktdBody = `<?xml version="1.0" encoding="UTF-8"?>

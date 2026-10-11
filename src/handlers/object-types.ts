@@ -60,6 +60,7 @@ export const SLASH_TYPE_MAP: Record<string, string> = {
   // adtcore:type="VIEW/DV" for V_USR_NAME.
   'VIEW/DV': 'VIEW', // docs/research/abap-types/types/view.md
   'SKTD/TYP': 'SKTD', // docs/research/abap-types/types/sktd.md
+  'SMBC/TYP': 'SMBC', // docs/research/abap-types/types/smbc.md
   'TTYP/DA': 'TTYP', // docs/research/abap-types/types/ttyp.md — live a4h 758 + 816 return adtcore:type="TTYP/DA"
   'ENQU/DL': 'ENQU', // docs/research/abap-types/types/enqu.md — live 758 + 816 return adtcore:type="ENQU/DL"
 };
@@ -94,6 +95,7 @@ export const SLASH_TYPE_EVIDENCE: Record<string, string> = {
   'TRAN/T': 'docs/research/abap-types/types/tran.md',
   'VIEW/DV': 'docs/research/abap-types/types/view.md',
   'SKTD/TYP': 'docs/research/abap-types/types/sktd.md',
+  'SMBC/TYP': 'docs/research/abap-types/types/smbc.md',
   'TTYP/DA': 'docs/research/abap-types/types/ttyp.md',
   'ENQU/DL': 'docs/research/abap-types/types/enqu.md',
 };
@@ -133,6 +135,7 @@ export const KNOWN_BASE_TYPES = new Set([
   'TRAN',
   'VIEW',
   'SKTD',
+  'SMBC',
   'TTYP',
   'ENQU',
   'ENHO',
@@ -418,6 +421,8 @@ export function functionModuleObjectUrl(group: string, name: string): string {
 export function objectBasePath(type: string): string {
   if (Object.hasOwn(SDO_REGISTRY, type)) return `${SDO_REGISTRY[type as keyof typeof SDO_REGISTRY].href}/`;
   switch (type) {
+    case 'SMBC':
+      return '/sap/bc/adt/bct/smbctyp/';
     case 'PROG':
       return '/sap/bc/adt/programs/programs/';
     case 'REPT':
@@ -539,8 +544,8 @@ export function objectBasePath(type: string): string {
 
 /** Map object type + name to the ADT object URL used by CRUD/DevTools/etc. Name is URI-encoded. */
 export function objectUrlForType(type: string, name: string): string {
-  // KTD endpoints require lowercase object names in the URL path (confirmed via Eclipse ADT trace).
-  const effectiveName = type === 'SKTD' ? name.toLowerCase() : name;
+  // KTD and SMBC use lowercase names in their verified ADT paths.
+  const effectiveName = type === 'SKTD' || type === 'SMBC' ? name.toLowerCase() : name;
   return `${objectBasePath(type)}${encodeURIComponent(effectiveName)}`;
 }
 
