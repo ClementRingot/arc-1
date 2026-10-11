@@ -828,6 +828,7 @@ export const SAPWriteSchemaBtp = z
       'batch_create',
       'scaffold_rap_handlers',
       'generate_behavior_implementation',
+      'edit_text_symbols',
     ]),
     type: z.enum(SAPWRITE_TYPES_BTP).optional(),
     name: z.string().optional(),
@@ -837,6 +838,7 @@ export const SAPWriteSchemaBtp = z
       (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
       z.enum(CLASS_WRITE_INCLUDES).optional(),
     ),
+    textPart: z.enum(['symbols']).optional(),
     method: z.string().optional(),
     /**
      * Visibility section. For action="add_method": the section to insert into (default 'public').
@@ -907,7 +909,12 @@ export const SAPWriteSchemaBtp = z
     objects: z.array(batchObjectSchemaBtp).max(BATCH_CREATE_MAX_OBJECTS).optional(),
   })
   .strict()
-  .superRefine((input, ctx) => validateSapWriteInput(input, ctx));
+  .superRefine((input, ctx) => {
+    validateSapWriteInput(input, ctx);
+    if (input.action === 'edit_text_symbols' && input.type !== 'CLAS') {
+      ctx.addIssue({ code: 'custom', path: ['type'], message: 'BTP edit_text_symbols requires type=CLAS.' });
+    }
+  });
 
 // ─── SAPActivate ────────────────────────────────────────────────────
 
