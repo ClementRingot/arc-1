@@ -73,7 +73,6 @@ sequence.
 | [COMPAT-06](#compat-06) | Standard outbound proxy support | P2 | M | Ready | Compatibility |
 | [COMPAT-13](#compat-13) | NW 7.40 freestyle SQL length boundary | P1 | S | Needs research | Compatibility |
 | [COMPAT-07](#compat-07) | CDS view-entity replacement lineage | P2 | S | Needs research | Compatibility |
-| [COMPAT-09](#compat-09) | Exact lookup with decorated SAP object names | P2 | S | Needs research | Compatibility |
 | [COMPAT-16](#compat-16) | API-release directory cleanup | P2 | S | Needs research | Compatibility |
 | [COMPAT-10](#compat-10) | CDS set-operation lineage | P2 | M | Needs research | Compatibility |
 | [COMPAT-12](#compat-12) | Deletion with another user's text draft | P3 | S | Needs research | Compatibility |
@@ -252,23 +251,6 @@ posted chunks, line endings, row caps and returned/executed SQL. Compare LF/CRLF
 and restrictive tails before choosing a workaround; do not guess a length cap.
 The [evidence and probe plan](https://github.com/arc-mcp/arc-1/blob/main/docs/plans/2026-10-09-count-only-grouped-sql.md)
 contains the SAP Note applicability, release differences and conditional fixes.
-
-<a id="compat-09"></a>
-### COMPAT-09 — Exact lookup with decorated SAP object names
-
-- **Priority / effort / status:** P2 / S / Needs research
-- **Category:** Compatibility
-
-**Remaining gap.** On SAP_BASIS 750, quickSearch labels functions such as
-`BAPI_USER_GET_DETAIL` with ` (Function Module)`. `lookupObjects` compares that display name
-literally, discards the hit, and `SAPContext(usages)` without a type reports no object. Both standard
-and `/UI2/` function lookups reproduce this on 750 and succeed on 758. The function-specific group
-resolver repaired by [PR #911](https://github.com/arc-mcp/arc-1/pull/911) does not repair this path;
-provide `type="FUNC"` for usages to select that resolver.
-
-**Resume with.** Establish canonical identity for generic lookup and type-free usages across ADT
-object families, using verified fields or URIs rather than stripping arbitrary display text. Test
-namespaces, ambiguous names, unrelated hits, and both releases before replacing the exact filters.
 
 <a id="compat-07"></a>
 ### COMPAT-07 — CDS view-entity replacement lineage
