@@ -626,11 +626,14 @@ See [the implemented contract](https://github.com/arc-mcp/arc-1/blob/main/docs/r
 
 **Idea.** Add read/create/update coverage for CDS index objects advertised by ADT discovery.
 
-**Why it remains.** Discovery markers exist, but ARC-1 has no verified object instances, source
-shape, lifecycle, or cross-release tests.
+**Why it remains.** Classic transparent-table indexes (`TABL/DTI`) now have native listing,
+JSON CRUD and separate activation, verified on 758/816/BTP; they do not establish the
+contract for CDS table-entity index variants or XINX extension indexes. See the
+[classic-index evidence](https://github.com/arc-mcp/arc-1/blob/main/docs/research/2026-10-12-table-indexes.md).
 
-**Unblock when.** A test system has a seed object or a reproducible creation path. Record the live
-media types and activation behavior before adding schemas.
+**Unblock when.** A test system has a CDS table-entity index or XINX seed object and a
+reproducible creation path. Record native identity, media types, package/transport ownership
+and database activation/conversion behavior before extending classic-index support.
 
 <a id="feat-73"></a>
 ### FEAT-73 — Additional server-driven object types

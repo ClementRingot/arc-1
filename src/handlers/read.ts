@@ -20,6 +20,7 @@ import {
   isServerDrivenObjectType,
   serverDrivenUnavailableMessage,
 } from '../adt/server-driven.js';
+import { listTableIndexes } from '../adt/table-index.js';
 import { getTableSettings } from '../adt/table-settings.js';
 import type { FunctionModuleProperties, InactiveObject } from '../adt/types.js';
 import { getAppInfo } from '../adt/ui5-repository.js';
@@ -242,6 +243,13 @@ export async function handleSAPRead(
     if (!name) return errorResult('"name" is required for TABL/DTT.');
     const version = args.version === 'active' || args.version === 'inactive' ? args.version : undefined;
     return textResult(toolJson(await getTableSettings(client.http, client.safety, name, version)));
+  }
+
+  if (type === 'TABL' && String(args.include ?? '').toLowerCase() === 'indexes') {
+    if (!name) return errorResult('SAPRead TABL include=indexes requires a table name.');
+    if (!(await ensureServerDrivenSupport(client.http, client.safety, 'TABL/DTI')))
+      return errorResult(serverDrivenUnavailableMessage('SAPRead', 'TABL/DTI'));
+    return textResult(toolJson(await listTableIndexes(client.http, client.safety, name)));
   }
 
   if (type === 'SMBC') {

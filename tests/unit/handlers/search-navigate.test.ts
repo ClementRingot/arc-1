@@ -1362,8 +1362,8 @@ describe('SAPSearch / SAPQuery / SAPGit / SAPNavigate handlers', () => {
     it.each([
       ...SDO_TYPES.map((type) => ({
         type,
-        name: 'ZTEST_OBJECT',
-        expectedUri: `${SDO_REGISTRY[type].href}/ZTEST_OBJECT`,
+        name: type === 'TABL/DTI' ? 'ZTEST_OBJECT~001' : 'ZTEST_OBJECT',
+        expectedUri: `${SDO_REGISTRY[type].href}/${type === 'TABL/DTI' ? 'ztest_object~001' : 'ZTEST_OBJECT'}`,
       })),
       { type: 'dsfd', name: '/arc/test', expectedUri: '/sap/bc/adt/ddic/dsfd/sources/%2FARC%2FTEST' },
     ])('resolves server-driven $type $name to its own collection URI', async ({ type, name, expectedUri }) => {

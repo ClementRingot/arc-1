@@ -129,6 +129,16 @@ function validateSapReadInput(
   if (input.include) {
     const include = input.include.toLowerCase();
     if (
+      include === 'indexes' &&
+      (input.type !== 'TABL' || input.action === 'diff' || (input.version && input.version !== 'auto'))
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['include'],
+        message: 'include=indexes requires type=TABL and lists available indexes without a version or diff selector.',
+      });
+    }
+    if (
       input.type === 'CLAS' &&
       !SAPREAD_CLAS_READ_INCLUDES.includes(include as (typeof SAPREAD_CLAS_READ_INCLUDES)[number])
     ) {

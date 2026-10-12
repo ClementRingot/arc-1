@@ -52,6 +52,7 @@ import {
   serverDrivenUnavailableMessage,
   updateServerDrivenObjectSource,
 } from '../adt/server-driven.js';
+import { tableIndexParentUrl } from '../adt/table-index.js';
 import type { ResolvedFeatures, SystemType } from '../adt/types.js';
 import { escapeXmlAttr } from '../adt/xml-parser.js';
 import type { CachingLayer } from '../cache/caching-layer.js';
@@ -1009,7 +1010,16 @@ export async function handleServerDrivenObjectWrite(
 
   switch (action) {
     case 'create': {
-      const pkg = String(args.package ?? '$TMP');
+      let pkg = String(args.package ?? '$TMP');
+      if (type === 'TABL/DTI') {
+        const parentPackage = await client.resolveObjectPackage(tableIndexParentUrl(name));
+        if (!parentPackage) return errorResult('Cannot determine the parent table package. No index was created.');
+        if (args.package !== undefined && args.package !== parentPackage)
+          return errorResult(
+            `Index package must match its parent table (${parentPackage}). Omit package to inherit it.`,
+          );
+        pkg = parentPackage;
+      }
       await checkPackage(client.safety, pkg, client.getPackageHierarchyResolver());
       if (type === 'APLO' && name.length > 20) {
         return errorResult('APLO names must be at most 20 characters. Nothing was created.');
@@ -1067,7 +1077,10 @@ export async function handleServerDrivenObjectWrite(
       await enforceAllowedPackageForObjectUrl(client, objUrl, `Operations on ${type} '${name}'`, metadataAccept);
       await updateServerDrivenObjectSource(client.http, client.safety, type, name, v.source, { transport });
       invalidate();
-      return textResult(`Updated source of ${type} ${name}.\n${activationHint}`);
+      return textResult(
+        `Updated source of ${type} ${name}.\n${activationHint}` +
+          (type === 'TABL/DTI' ? ' The complete index definition replaces any pending definition.' : ''),
+      );
     }
     case 'delete': {
       await enforceAllowedPackageForObjectUrl(client, objUrl, `Operations on ${type} '${name}'`, metadataAccept);

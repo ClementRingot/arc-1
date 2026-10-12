@@ -124,8 +124,8 @@ const FULL_ACCESS_CONFIG: ServerConfig = {
 // every SAPWrite action carries a line. Raising is a maintainer decision, never a silent fix for a
 // failing build. Maintainer-approved 72,000 → 74,000 for combined #769 relations + #772 ATC
 // batches: 72,561 measured bytes, preserving evaluated guidance with 1,439 bytes of headroom.
-// TABL/DTT adds required partial-update/activation guidance: largest tool 23,263 bytes.
-// Retain existing model guidance; allow 23,300 for the full on-prem tool set. Other wire ceilings stay unchanged.
+// TABL/DTT and TABL/DTI add separate settings/index write guidance.
+// Retain existing model guidance; allow 23,550 for the full on-prem tool set (23,517 measured combined). Other wire ceilings stay unchanged.
 const WRITE_WIRE_WALL = 74_000;
 const READ_WIRE_WALL = 50_000;
 const PER_TOOL_WIRE_WALL = 23_000;
@@ -211,7 +211,7 @@ export const TOOL_SCHEMA_SCENARIOS: ToolSchemaScenario[] = [
       // Includes expectedSourceHash (#853) and SAPRead.source (#855).
       descriptionCount: 279,
       maxTotalWireBytes: WRITE_WIRE_WALL,
-      maxPerToolWireBytes: 23_300,
+      maxPerToolWireBytes: 23_550,
     },
   },
   {
@@ -224,7 +224,7 @@ export const TOOL_SCHEMA_SCENARIOS: ToolSchemaScenario[] = [
       // Raised 16_800 -> 16_900 and descriptions 260 -> 265 for structured KTD shortTexts while
       // retaining refObjectDescription guidance. Wire ceilings remain unchanged.
       // Combined relations + bounded ATC objects[]; retain a tighter BTP token ratchet.
-      schemaTokenEstimate: 17_450,
+      schemaTokenEstimate: 17_500,
       descriptionTokenEstimate: 12_200,
       descriptionCount: 273,
       maxTotalWireBytes: WRITE_WIRE_WALL,
@@ -269,7 +269,7 @@ export const TOOL_SCHEMA_SCENARIOS: ToolSchemaScenario[] = [
       descriptionTokenEstimate: 12_800,
       descriptionCount: 279,
       maxTotalWireBytes: WRITE_WIRE_WALL,
-      maxPerToolWireBytes: 23_300,
+      maxPerToolWireBytes: 23_550,
     },
   },
   {
@@ -278,7 +278,7 @@ export const TOOL_SCHEMA_SCENARIOS: ToolSchemaScenario[] = [
     textSearchAvailable: true,
     resolvedFeatures: { ...LIVE_RELATIONS_FEATURES, systemType: 'btp' },
     budget: {
-      schemaTokenEstimate: 17_450,
+      schemaTokenEstimate: 17_500,
       descriptionTokenEstimate: 12_200,
       descriptionCount: 273,
       maxTotalWireBytes: WRITE_WIRE_WALL,

@@ -5,7 +5,7 @@
  * LLM arg-stripping, and class-include helpers.
  */
 
-import { SDO_REGISTRY } from '../adt/server-driven.js';
+import { SDO_REGISTRY, serverDrivenObjectUrl } from '../adt/server-driven.js';
 
 // ─── Object URL Mapping ──────────────────────────────────────────────
 
@@ -547,6 +547,7 @@ export function objectBasePath(type: string): string {
 
 /** Map object type + name to the ADT object URL used by CRUD/DevTools/etc. Name is URI-encoded. */
 export function objectUrlForType(type: string, name: string): string {
+  if (type === 'TABL/DTI') return serverDrivenObjectUrl(type, name);
   // KTD and SMBC use lowercase names in their verified ADT paths.
   const effectiveName = type === 'SKTD' || type === 'SMBC' ? name.toLowerCase() : name;
   return `${objectBasePath(type)}${encodeURIComponent(effectiveName)}`;
