@@ -112,6 +112,7 @@ approval. `SAPDiagnose` remains mixed and hyperfocused `SAP` remains unannotated
 | `SMBC` | Business Configuration Maintenance Object: native JSON, available on 758/816 and BTP. `SMBC/TYP` is accepted. Omitted/`auto` uses SAP’s developer view; explicit versions are verified. Transport `check`/`history` are supported; SMBC source writes are not. |
 | `SKTD` / `KTD` | Knowledge Transfer Document attached to an ABAP object. Returns Markdown decoded from the ADT XML envelope, one `## <node id>` section per documented node when routing is needed (BDEF entities, savers, actions, functions, …). A heading that names a node — its id, or the node name the index prints — is reserved routing syntax; a colliding heading inside stored body text is reversibly shown with one leading `\`. Behind a reserved HTML-comment marker, the response lists populated per-node short texts and a compact index of EVERY writable node, each by the spelling that resolves back to it (the name, or the full id when only that does), with the empty ones on an `empty (n):` line. Add a `## <name>` section above the marker to document one; use `shortTexts` to update its short text. Start multi-node edits from the complete `SAPRead` result; a standalone `## <object name>` is refused when it could instead be a visible root title (use `# <object name>` for that title). `SAPWrite` ignores the marker and context below it; the writable Markdown still follows the requested active/inactive version semantics. Documented non-writable sections can pass through unchanged while attempted edits remain refused. `KTD` is a friendly alias; `SKTD` remains the canonical SAP object type. |
 | `TABL` | DDIC TABL — covers both transparent tables (T000-style) and DDIC structures (BAPIRET2-style). Returns CDS-like source. ARC-1 auto-resolves the URL: tries `/sap/bc/adt/ddic/tables/{name}` first, falls back to `/sap/bc/adt/ddic/structures/{name}` on 404. There is no separate `STRU` type — `TABL` is the canonical short type for both, mirroring TADIR `R3TR TABL` and abapGit conventions. |
+| `TABL/DTT` | Technical settings of a transparent table; `name` is the table name. Returns working state, editable `source`, and read-only storage/logging fields. See [Technical table settings](#technical-table-settings). |
 | `TTYP` | DDIC table type (on-prem and BTP where discovered). Returns `{name, description, rowType, rowTypeKind, rowTypeLength, rowTypeDecimals, accessType, keyKind, plainStandardTable, package}`. Key components and secondary keys are not listed; `plainStandardTable` is `false` when the table type has them or is not a standard table with a non-unique standard key. Written via `SAPWrite(type="TTYP")` — the create POSTs a CHAR shell and a follow-up PUT sets the real row type. |
 | `ENQU` | DDIC lock object (on-prem and BTP; `ENQU/DL` accepted). Returns `{name, description, package, version, allowRFC, primaryTable, secondaryTables, lockParameters, lockModules}` — tables carry `{tableName, lockMode}`, parameters `{parameterName, tableName, fieldName, parameterWanted}`, and `lockModules` lists the generated `ENQUEUE_`/`DEQUEUE_` function modules. Omitted `version` returns SAP's developer view. Written via `SAPWrite(type="ENQU")` — see [Lock object writes](#lock-object-writes-enqu). |
 | `VIEW` | DDIC view |
@@ -386,7 +387,7 @@ keep their separate behavior.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `action` | string | Yes | `create`, `update`, `delete`, `edit_method`, `edit_unit`, `add_unit` (on-prem), `edit_class_definition`, `add_method`, `edit_method_signature`, `delete_method`, `change_method_visibility`, `batch_create`, `scaffold_rap_handlers`, `generate_behavior_implementation`, or `edit_text_symbols`. `edit_unit` replaces one FORM or MODULE in a PROG/INCL; `add_unit` inserts a new one; see [Procedural unit surgery](#procedural-unit-surgery). The class-section surgery actions (`edit_class_definition`, `add_method`, `edit_method_signature`, `delete_method`, `change_method_visibility`) are token-efficient edits to a global class without re-sending `/source/main`. See [Class-section surgery](#class-section-surgery) below. `edit_text_symbols` writes one part of a CLAS/PROG/FUGR text pool — see [Text elements](#text-elements). |
-| `type` | string | No | `PROG`, `CLAS`, `INTF`, `FUNC`, `FUGR`, `INCL`, `DDLS`, `DCLS`, `DDLX`, `BDEF`, `SRVD`, `SRVB`, `SKTD`/`KTD`, `TABL`, `TTYP`, `TABL/DT`, `TABL/DS`, `DOMA`, `DTEL`, `ENQU`, `ENHO` (BAdI implementations), `MSAG` (for single object actions; availability is adapted for BTP vs. on-prem), plus the server-driven objects `DESD`/`EVTB`/`DTSC`/`CSNM`/`EVTO`/`COTA`/`DSFD`/`DTDC`/`UIAD`/`DRTY`/`APLO`/`SAJC`/`SAJT` (see [Server-driven object writes](#server-driven-object-writes)). Slash/case aliases are auto-normalized (e.g., `CLAS/OC` or `clas` → `CLAS`; `KTD` → `SKTD`). |
+| `type` | string | No | `PROG`, `CLAS`, `INTF`, `FUNC`, `FUGR`, `INCL`, `DDLS`, `DCLS`, `DDLX`, `BDEF`, `SRVD`, `SRVB`, `SKTD`/`KTD`, `TABL`, `TTYP`, `TABL/DT`, `TABL/DS`, `TABL/DTT` (update only), `DOMA`, `DTEL`, `ENQU`, `ENHO` (BAdI implementations), `MSAG` (for single object actions; availability is adapted for BTP vs. on-prem), plus the server-driven objects `DESD`/`EVTB`/`DTSC`/`CSNM`/`EVTO`/`COTA`/`DSFD`/`DTDC`/`UIAD`/`DRTY`/`APLO`/`SAJC`/`SAJT` (see [Server-driven object writes](#server-driven-object-writes)). Slash/case aliases are auto-normalized (e.g., `CLAS/OC` or `clas` → `CLAS`; `KTD` → `SKTD`). |
 | `group` | string | No | For `FUNC`: parent function-group name. **Required for FUNC create** (the FUGR must already exist — create it first via `SAPWrite type=FUGR`). Auto-resolved via search for FUNC update/delete if omitted. For `INCL`: addresses a structural include inside this function group; supported by `create`, `update`, `delete`, `edit_unit`, and `add_unit`. Ignored for other types. |
 | `rowType` | string | No | `TTYP` create/update: the row type — a built-in ABAP type (`STRING`, `I`, …) or a DDIC type name such as `BAPIRET2`. Required for create. An update without it keeps the stored row type where ARC-1 can; see [table type updates](#table-type-updates). |
 | `rowTypeKind` | string | No | `TTYP` only: `builtin` or `structure`. Omit it and ARC-1 infers from `rowType`; pass it explicitly when SAP knows a built-in type ARC-1 has not enumerated. An update keeps the stored kind while the row type is unchanged. |
@@ -1076,6 +1077,42 @@ Moves a method's METHODS clause from its current visibility section to a target 
 #### Cross-release notes
 
 Verified live on a4h (S/4HANA 2023, kernel 7.58) end-to-end. The underlying `/objectstructure` endpoint also works on NW 7.50 SP02 (reads verified); on that release methods are split across `CLAS/OO` (def) + `CLAS/OM` (impl) elements and merged by name in the parser. Writes on the un-patched NW 7.50 dev edition can trip [SAP Note 2727890](https://launchpad.support.sap.com/#/notes/2727890) "ADT: fix unstable adt lock handle" — a system-level bug affecting every ADT write, not specific to this feature; ARC-1 detects the 423 status and emits a hint.
+
+### Technical table settings
+
+`TABL/DTT` reads and updates the separately locked settings of a transparent table.
+Available on tested SAP_BASIS 758, 816 and BTP ABAP 920; unavailable on tested 750.
+The table's actual package controls update and activation permission.
+
+```javascript
+SAPRead(type="TABL/DTT", name="ZORDERS")
+SAPWrite(action="update", type="TABL/DTT", name="ZORDERS",
+  source='{"dataClass":"APPL1","sizeCategory":2}')
+SAPActivate(type="TABL/DTT", name="ZORDERS")
+```
+
+Update `source` is a nonempty partial JSON object. Copy selected fields from the
+read result's `source`, not the whole result. Supported fields:
+
+| Field | Values |
+|-------|--------|
+| `dataClass` | Native data class, e.g. `APPL0`, `APPL1`, `APPL2`; SAP validates its meaning |
+| `sizeCategory` | Integer 0–9 |
+| `buffering.allowed` | `N` forbidden, `A` permitted but off, `X` on |
+| `buffering.type` | `""` none, `P` single record, `G` generic, `X` full |
+| `buffering.areaKeyFields` | Number of leading key fields for generic buffering; otherwise 0 |
+
+Send coherent buffering settings together, e.g.
+`{"buffering":{"allowed":"X","type":"G","areaKeyFields":1}}`.
+Omitted fields, read-only fields and earlier inactive changes are preserved.
+Saving does not activate or validate every SAP constraint. Activation applies the
+whole pending settings document and verifies its resulting state. A new table
+needs `SAPActivate(type="TABL", ...)` first; settings cannot be created/deleted
+independently. Explicit `version="active"`/`"inactive"` reads refuse a different
+version returned by SAP; omit `version` to prefer any pending draft, including another user's draft,
+with active settings as the native fallback.
+
+Storage type, load unit and logging remain read-only. No SQL or legacy fallback.
 
 <a id="class-text-symbols"></a>
 

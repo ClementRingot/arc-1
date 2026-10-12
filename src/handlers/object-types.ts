@@ -128,6 +128,7 @@ export const KNOWN_BASE_TYPES = new Set([
   'SRVB',
   'DDLX',
   'TABL',
+  'TABL/DTT',
   'DOMA',
   'DTEL',
   'MSAG',
@@ -472,6 +473,8 @@ export function objectBasePath(type: string): string {
       // Bare TABL defaults to transparent table. For reads, callers should use
       // AdtClient.resolveTablObjectUrl(name) which falls back to /structures/ on 404.
       return '/sap/bc/adt/ddic/tables/';
+    case 'TABL/DTT':
+      return '/sap/bc/adt/ddic/db/settings/';
     case 'TABL/DS':
       // DDIC structures only route through this collection; see follow-up to #285.
       return '/sap/bc/adt/ddic/structures/';

@@ -461,6 +461,13 @@ function validateSapWriteInput(
   },
   ctx: { addIssue: (issue: { code: 'custom'; path: string[]; message: string }) => void },
 ): void {
+  if (input.type === 'TABL/DTT' && input.action !== 'update') {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['action'],
+      message: 'TABL/DTT supports update only; create or delete the parent TABL instead.',
+    });
+  }
   const preconditionError = sourcePreconditionError(input.type ?? '', input.action, input.expectedSourceHash);
   if (preconditionError) ctx.addIssue({ code: 'custom', path: ['expectedSourceHash'], message: preconditionError });
   // Treat empty/whitespace include as "not provided" — some MCP clients serialize
@@ -595,7 +602,7 @@ const tableTypeDimensionSchema = z
 
 const batchObjectSchemaOnprem = z
   .object({
-    type: z.enum(SAPWRITE_TYPES_ONPREM),
+    type: z.enum(SAPWRITE_TYPES_ONPREM).exclude(['TABL/DTT']),
     name: z.string(),
     source: z.string().optional(),
     description: z.string().optional(),
@@ -652,7 +659,7 @@ const batchObjectSchemaOnprem = z
 
 const batchObjectSchemaBtp = z
   .object({
-    type: z.enum(SAPWRITE_TYPES_BTP),
+    type: z.enum(SAPWRITE_TYPES_BTP).exclude(['TABL/DTT']),
     name: z.string(),
     source: z.string().optional(),
     description: z.string().optional(),

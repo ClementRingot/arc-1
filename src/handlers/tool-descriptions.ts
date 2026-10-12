@@ -22,6 +22,7 @@ const SAPWRITE_BODY_ONPREM =
   'Type codes are auto-normalized and case-insensitive (e.g., "CLAS/OC" → "CLAS"). ' +
   'Source objects (PROG/CLAS/INTF/DDLS/DCLS/DDLX/BDEF/SRVD/TABL/INCL) write via /source/main. CLAS update: pass include=definitions|implementations|macros|testclasses to write a local include; omit for source/main. ' +
   'TABL create: "TABL"/"TABL/DT" → transparent table (16-char name); "TABL/DS" → structure (30-char, namespaces OK); update/delete/activate auto-discover the subtype. ' +
+  'TABL/DTT: update technical settings with partial JSON source {dataClass,sizeCategory,buffering:{allowed:N/A/X,type:P/G/X/empty,areaKeyFields}}. Omitted fields and existing drafts are preserved. Activate separately; a new table needs TABL activation first. ' +
   'Metadata-XML writes (not /source/main): DOMA/DTEL (dataType, length, fixedValues, typeKind, labels, searchHelp; deactivateInputHistory=true disables input history); MSAG (messages array of {number, shortText}); SRVB (serviceDefinition, odataVersion V2/V4, optional category 0=UI/1=Web API; bindingType like "ODataV4-UI" auto-normalized). ' +
   'SKTD/KTD (Markdown docs on a KTD-capable object; KTD aliases SKTD): create needs refObjectType (parent type+subtype, e.g. "DDLS/DF"); "name" MUST equal the parent name; update takes Markdown in source; then SAPActivate(type="SKTD"). ' +
   // "group"/FUGR-must-exist and processingType live on their own property descriptions — not repeated here.
@@ -37,6 +38,7 @@ const SAPWRITE_BODY_ONPREM =
 const SAPWRITE_BODY_BTP =
   'BTP: handles lock/modify/unlock automatically. ABAP Cloud language only; Z*/Y* names. Type aliases are normalized. ' +
   'Source objects (CLAS/INTF/DDLS/DCLS/DDLX/BDEF/SRVD/TABL) write via /source/main. CLAS update: pass include=definitions|implementations|macros|testclasses for a local include; omit for source/main. ' +
+  'TABL/DTT: update technical settings with partial JSON source {dataClass,sizeCategory,buffering:{allowed:N/A/X,type:P/G/X/empty,areaKeyFields}}. Omitted fields and existing drafts are preserved. Activate separately; a new table needs TABL activation first. ' +
   'Metadata-XML writes (not /source/main): DOMA/DTEL (dataType, length, fixedValues, typeKind, labels, searchHelp; deactivateInputHistory=true disables input history); MSAG (messages array of {number, shortText}); SRVB (serviceDefinition, odataVersion V2/V4, optional category 0=UI/1=Web API). ' +
   'SKTD/KTD (Markdown docs on a KTD-capable object; KTD aliases SKTD): create needs refObjectType (e.g. "DDLS/DF"); "name" MUST equal the parent name; update takes Markdown in source; then SAPActivate(type="SKTD"). ' +
   'edit_method: replace one CLAS method body via source. Local-class methods use the qualified specifier (e.g. "lhc_project~approve_project"); auto-routing lhc_*/lcl_* → implementations, ltc_* → testclasses (override with include=). ' +

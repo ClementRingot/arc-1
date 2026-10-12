@@ -92,7 +92,7 @@ sequence.
 | [FEAT-22](#feat-22) | Safe gCTS mutation workflows | P3 | L | Needs research | Integration |
 | [FEAT-34](#feat-34) | Translation workflows beyond text symbols | P3 | L | Needs research | Localization |
 | [FEAT-62](#feat-62) | Transaction source and write support | P3 | M | Blocked | Object coverage |
-| [FEAT-70](#feat-70) | Table technical settings | P2 | M | Needs research | Object coverage |
+| [FEAT-70](#feat-70) | Additional table technical settings | P3 | S | Needs research | Object coverage |
 | [FEAT-72](#feat-72) | CDS index objects | P3 | M | Blocked | Object coverage |
 | [FEAT-73](#feat-73) | Additional server-driven object types | P3 | S | Needs research | Object coverage |
 | [FEAT-78](#feat-78) | Table type access type and keys | P2 | M | Needs research | Object coverage |
@@ -602,23 +602,21 @@ fallback behavior, then validate the read/write APIs on two releases.
 contract can be captured.
 
 <a id="feat-70"></a>
-### FEAT-70 — Table technical settings
+### FEAT-70 — Additional table technical settings
 
-- **Priority / effort / status:** P2 / M / Needs research
+- **Priority / effort / status:** P3 / S / Needs research
 - **Category:** Object coverage
 
-**Idea.** Read and safely edit a database table's technical settings, including data class, size
-category, buffering, and storage type where supported.
+**Idea.** Extend `TABL/DTT` updates to storage type, load unit or logging only where
+SAP advertises an editable, verified contract. Data class, size category and buffering
+already have separate read/update/activation support; table DDL annotations are outside this gap.
 
-**Why it remains.** TABL source writes already accept annotations such as delivery class, but
-technical table settings are a separate development object. Their lifecycle is not implemented by
-passing table DDL through `SAPWrite`; ARC-1 has no dedicated technical-settings read/write contract.
-SAP describes the distinction in its
-[database-table guide](https://learning.sap.com/courses/building-data-models-with-the-abap-dictionary-and-abap-core-data-services/creating-database-tables_ebc1477d-96ed-414b-82d4-4171da43f4a6).
+**Why it remains.** The additional fields vary by release and can be read-only. Current
+reads expose native values but deliberately do not enable their mutation.
 
-**Resume with.** Capture the live ADT contract, identify release-specific fields and defaults,
-preserve unchanged settings during partial edits, and verify package/transport gates, activation,
-and read-back. Keep already-supported DDL annotations outside this gap.
+**Resume with.** A concrete use case and native editable-field evidence on the target
+releases; qualify activation, recording transports and preservation of other pending settings.
+See [the implemented contract](https://github.com/arc-mcp/arc-1/blob/main/docs/research/2026-10-12-table-technical-settings.md).
 
 <a id="feat-72"></a>
 ### FEAT-72 — CDS index objects
