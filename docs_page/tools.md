@@ -1419,6 +1419,10 @@ design. This experimental blocklist is not an allowlist and not a replacement fo
 
 Execute ABAP SQL queries against SAP tables.
 
+Freestyle SQL uses CRLF line separators and safe wrapping at SAP’s 255-character payload-line
+boundary, including generated IN-list chunks. Long literals or comments that cannot be split safely
+are refused; this is not a total-query length cap.
+
 > **Self-correcting errors.** An unknown *table* yields a "Did you mean …?" suggestion; an unknown *column* (here or in `SAPRead type=TABLE_QUERY`) yields the table's actual column list (`Unknown column "X" on T000. Available columns: MANDT, MTEXT, …`), so the agent retries in one shot. Best-effort: if column discovery is unavailable (e.g. the `datapreview` endpoint is unbound on older NW 7.50 SPs), the original error is returned unchanged.
 
 **Parameters:**

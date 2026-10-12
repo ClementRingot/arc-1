@@ -42,13 +42,12 @@ function findSafeLineBreak(line: string, segmentStart: number): number | undefin
   return lastSafeBreak;
 }
 
-/** Replace only whitespace outside literals, preserving tokens and existing comment boundaries. */
+/** Fit 255-character payload lines and send CRLF; older SAP handlers do not recognize bare LF. */
 export function fitFreestyleSqlLines(sql: string): string {
   return sql
-    .split('\n')
+    .split(/\r?\n/)
     .map((line) => {
-      // CRLF's carriage return is not part of the SQL line; preserve it in the final slice.
-      const lineLength = line.endsWith('\r') ? line.length - 1 : line.length;
+      const lineLength = line.length;
       if (lineLength <= FREESTYLE_SQL_LINE_MAX) return line;
       if (line.startsWith('*')) throw new Error(LINE_WRAP_REFUSAL);
 
@@ -61,9 +60,9 @@ export function fitFreestyleSqlLines(sql: string): string {
         segmentStart = breakAt + 1;
       }
       parts.push(line.slice(segmentStart));
-      return parts.join('\n');
+      return parts.join('\r\n');
     })
-    .join('\n');
+    .join('\r\n');
 }
 
 /** Allowed SQL comparison operators for TABLE_QUERY where conditions. */

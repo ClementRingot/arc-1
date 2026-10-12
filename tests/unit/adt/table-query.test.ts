@@ -3,19 +3,31 @@ import { buildTableQuerySql } from '../../../src/adt/client.js';
 import { exactSqlIdentifier, fitFreestyleSqlLines } from '../../../src/adt/table-query.js';
 
 describe('fitFreestyleSqlLines', () => {
-  it.each(['SELECT * FROM t000', 'SELECT mandt\nFROM t000', 'SELECT mandt\r\nFROM t000', `${'x'.repeat(255)}\r\n`])(
+  it.each(['SELECT * FROM t000', 'SELECT mandt\r\nFROM t000', `${'x'.repeat(255)}\r\n`])(
     'preserves already-fitting input: %s',
     (sql) => {
       expect(fitFreestyleSqlLines(sql)).toBe(sql);
     },
   );
 
+  it('normalizes short LF input, existing CRLF and inserted wraps to CRLF (#955)', () => {
+    const sql =
+      "SELECT tabname, fieldname, position FROM dd03l WHERE tabname = 'T000' AND as4local = 'A' AND as4vers\n= '0000' AND fieldname <> 'Z01' AND fieldname <> 'Z02' AND fieldname <> 'Q' AND fieldname = 'MANDT'";
+    expect(sql).toHaveLength(200);
+    expect(fitFreestyleSqlLines(sql)).toBe(sql.replaceAll('\n', '\r\n'));
+    const long = `SELECT mandt FROM t000 WHERE ${Array(30).fill("mandt <> '999'").join(' AND ')}\r\n`;
+    const fitted = fitFreestyleSqlLines(long);
+    expect(fitted).not.toMatch(/(?<!\r)\n/);
+    expect(fitted.endsWith('\r\n')).toBe(true);
+    expect(fitFreestyleSqlLines(fitted)).toBe(fitted);
+  });
+
   it('keeps a long statement intact while fitting every physical line', () => {
     const sql = `SELECT mandt FROM t000 WHERE ${Array(30).fill("mandt <> '999'").join(' AND ')}`;
     const result = fitFreestyleSqlLines(sql);
-    expect(result).toContain('\n');
-    expect(result.replaceAll('\n', ' ')).toBe(sql);
-    expect(result.split('\n').every((line) => line.length <= 255)).toBe(true);
+    expect(result).toContain('\r\n');
+    expect(result.replaceAll('\r\n', ' ')).toBe(sql);
+    expect(result.split('\r\n').every((line) => line.length <= 255)).toBe(true);
   });
 
   it.each(["'", '`'])('preserves spaces and doubled %s delimiters inside literals', (quote) => {
@@ -23,8 +35,8 @@ describe('fitFreestyleSqlLines', () => {
     const sql = `SELECT mandt FROM t000 WHERE mtext = ${literal} OR mtext = ${literal}`;
     const result = fitFreestyleSqlLines(sql);
     expect(result.split(literal)).toHaveLength(3);
-    expect(result.replaceAll('\n', ' ')).toBe(sql);
-    expect(result.split('\n').every((line) => line.length <= 255)).toBe(true);
+    expect(result.replaceAll('\r\n', ' ')).toBe(sql);
+    expect(result.split('\r\n').every((line) => line.length <= 255)).toBe(true);
   });
 
   it.each([
@@ -40,8 +52,8 @@ describe('fitFreestyleSqlLines', () => {
     const sql = `${prefix}${literal} OR mtext = ${literal}`;
     const result = fitFreestyleSqlLines(sql);
     expect(result.split(literal)).toHaveLength(3);
-    expect(result.replaceAll('\n', ' ')).toBe(sql);
-    expect(result.split('\n').every((line) => line.length <= 255)).toBe(true);
+    expect(result.replaceAll('\r\n', ' ')).toBe(sql);
+    expect(result.split('\r\n').every((line) => line.length <= 255)).toBe(true);
   });
 
   it('preserves a short inline comment and its CRLF boundary when wrapping the preceding SQL', () => {
@@ -60,13 +72,13 @@ describe('fitFreestyleSqlLines', () => {
   it('allows a break at exactly 255 without creating a column-one star comment', () => {
     const sql = `SELECT ${' '.repeat(248)}* FROM t000`;
     const result = fitFreestyleSqlLines(sql);
-    expect(result.replaceAll('\n', ' ')).toBe(sql);
-    expect(result.split('\n').every((line) => line.length <= 255 && !line.startsWith('*'))).toBe(true);
-    expect(fitFreestyleSqlLines(`${'x'.repeat(255)} FROM t000`)).toBe(`${'x'.repeat(255)}\nFROM t000`);
+    expect(result.replaceAll('\r\n', ' ')).toBe(sql);
+    expect(result.split('\r\n').every((line) => line.length <= 255 && !line.startsWith('*'))).toBe(true);
+    expect(fitFreestyleSqlLines(`${'x'.repeat(255)} FROM t000`)).toBe(`${'x'.repeat(255)}\r\nFROM t000`);
   });
 
   it('wraps at tabs without changing the surrounding tokens', () => {
-    expect(fitFreestyleSqlLines(`${'x'.repeat(255)}\tFROM t000`)).toBe(`${'x'.repeat(255)}\nFROM t000`);
+    expect(fitFreestyleSqlLines(`${'x'.repeat(255)}\tFROM t000`)).toBe(`${'x'.repeat(255)}\r\nFROM t000`);
   });
 
   it('keeps a source identifier intact when it crosses character 255', () => {
@@ -74,8 +86,8 @@ describe('fitFreestyleSqlLines', () => {
     const sql = `${prefix}${' '.repeat(250 - prefix.length)}zexample_table`;
     const result = fitFreestyleSqlLines(sql);
     expect(result).toContain('zexample_table');
-    expect(result.replaceAll('\n', ' ')).toBe(sql);
-    expect(result.split('\n').every((line) => line.length <= 255)).toBe(true);
+    expect(result.replaceAll('\r\n', ' ')).toBe(sql);
+    expect(result.split('\r\n').every((line) => line.length <= 255)).toBe(true);
   });
 
   it.each([
