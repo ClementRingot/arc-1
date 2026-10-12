@@ -104,12 +104,12 @@ const ARRAY_TAGS = new Set([
   'badiImplementation',
 ]);
 
-/** Shared parser instance — configured for ADT XML conventions */
-const parser = new XMLParser({
+/** Common ADT conventions; data-preview cells additionally retain their exact text. */
+const parserOptions = {
   ignoreAttributes: false,
   attributeNamePrefix: '@_',
   removeNSPrefix: true, // Strip adtcore:, asx:, etc.
-  isArray: (name) => ARRAY_TAGS.has(name),
+  isArray: (name: string) => ARRAY_TAGS.has(name),
   parseAttributeValue: false, // Keep attributes as strings
   parseTagValue: false, // Keep tag values as strings (prevents "001" → 1)
   // Use the native entity boundary: unlike value processors, it skips literal CDATA.
@@ -121,7 +121,9 @@ const parser = new XMLParser({
     setXmlVersion: () => {},
     reset: () => {},
   },
-});
+};
+const parser = new XMLParser(parserOptions);
+const dataPreviewParser = new XMLParser({ ...parserOptions, trimValues: false });
 
 /**
  * Parse raw XML string to a JS object. Every attribute and text value is entity-DECODED
@@ -289,7 +291,7 @@ export interface DataPreviewMeta {
   totalRows?: number;
   /** Server-side execution time in milliseconds (ADT `queryExecutionTime`, as shown by Eclipse Data Preview). */
   queryExecutionTimeMs?: number;
-  /** The actual OpenSQL ADT generated and ran (whitespace-collapsed). */
+  /** The OpenSQL echo returned by SAP, without client-side whitespace normalization. */
   executedQueryString?: string;
 }
 
@@ -314,7 +316,7 @@ function parseDataPreviewMetaObject(parsed: Record<string, unknown>): DataPrevie
 
   const executed = td.executedQueryString;
   if (typeof executed === 'string' && executed.trim()) {
-    meta.executedQueryString = executed.trim().replace(/\s+/g, ' ');
+    meta.executedQueryString = executed;
   }
   return meta;
 }
@@ -322,13 +324,13 @@ function parseDataPreviewMetaObject(parsed: Record<string, unknown>): DataPrevie
 /** Parse data-preview rows and metrics from one shared fast-xml-parser object tree. */
 export function parseDataPreviewResult(xml: string): DataPreviewResult {
   if (!xml || xml.trim().length === 0) return { columns: [], rows: [] };
-  const parsed = parseXml(xml);
+  const parsed = dataPreviewParser.parse(xml) as Record<string, unknown>;
   return { ...parseTableContentsObject(parsed), ...parseDataPreviewMetaObject(parsed) };
 }
 
 export function parseTableContents(xml: string): { columns: string[]; rows: Record<string, string>[] } {
   if (!xml || xml.trim().length === 0) return { columns: [], rows: [] };
-  return parseTableContentsObject(parseXml(xml));
+  return parseTableContentsObject(dataPreviewParser.parse(xml) as Record<string, unknown>);
 }
 
 /**
@@ -338,7 +340,7 @@ export function parseTableContents(xml: string): { columns: string[]; rows: Reco
  */
 export function parseDataPreviewMeta(xml: string): DataPreviewMeta {
   if (!xml || xml.trim().length === 0) return {};
-  return parseDataPreviewMetaObject(parseXml(xml));
+  return parseDataPreviewMetaObject(dataPreviewParser.parse(xml) as Record<string, unknown>);
 }
 
 /**

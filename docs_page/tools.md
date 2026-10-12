@@ -236,6 +236,9 @@ SAPRead(type="SYSTEM")
 SAPRead(type="INACTIVE_OBJECTS")                 — list objects pending activation
 ```
 
+Data-preview cells are strings and preserve SAP’s whitespace, including leading blanks and numeric
+padding. `SAPQuery.executedQueryString` preserves SAP’s SQL echo; it is not a capture of the submitted request.
+
 For `TABLE_QUERY` on 758, use `op:"<>"` for inequality. Although the current input schema also accepts
 `!=`, ARC-1 sends it unchanged and that backend rejects it; normalization is tracked as a focused
 follow-up.

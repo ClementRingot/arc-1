@@ -334,7 +334,9 @@ describe('XML Parser', () => {
       const meta = parseDataPreviewMeta(xml);
       expect(meta.totalRows).toBe(511927);
       expect(meta.queryExecutionTimeMs).toBeCloseTo(0.315);
-      expect(meta.executedQueryString).toBe('SELECT MANDT FROM T000 INTO TABLE @DATA(LT_RESULT) UP TO 3 ROWS .');
+      expect(meta.executedQueryString).toBe(
+        'SELECT MANDT FROM T000   INTO     TABLE @DATA(LT_RESULT)   UP TO 3  ROWS   .',
+      );
     });
 
     it('returns empty object when fields are absent (old asx format)', () => {
@@ -376,7 +378,7 @@ describe('XML Parser', () => {
         { ROLLNAME: 'CKDETAILNO', DDTEXT: '(Serial) detail number of logical check (LTXHWM: 1 & 2)' },
       ]);
       expect(result.executedQueryString).toBe(
-        "SELECT ROLLNAME, DDTEXT FROM DD04T WHERE DDLANGUAGE = 'E' AND ROLLNAME IN ('CKDETAILNO', 'CHECKOP') AND DDTEXT LIKE '%<%' OR DDLANGUAGE = 'E' AND ROLLNAME = 'CKDETAILNO' INTO TABLE @DATA(LT_RESULT) UP TO 5 ROWS .",
+        "SELECT ROLLNAME, DDTEXT FROM DD04T WHERE DDLANGUAGE = 'E' AND ROLLNAME IN ('CKDETAILNO', 'CHECKOP') AND DDTEXT LIKE '%<%' OR DDLANGUAGE = 'E' AND ROLLNAME = 'CKDETAILNO'   INTO     TABLE @DATA(LT_RESULT)   UP TO 5  ROWS   .",
       );
       expect(parseTableContents(xml).rows).toEqual(result.rows);
     });
