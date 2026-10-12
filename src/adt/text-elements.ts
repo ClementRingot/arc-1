@@ -39,6 +39,12 @@ export type TextElementPart = keyof typeof TEXT_ELEMENT_CT;
 /** Object types that have a text pool on the textelements service. */
 export type TextElementObjectType = keyof typeof TEXT_ELEMENT_COLLECTIONS;
 
+export interface TextElementWriteResult {
+  changes: string;
+  state: 'active' | 'inactive' | 'unknown';
+  unchanged: boolean;
+}
+
 export const TEXT_ELEMENT_PARTS = Object.keys(TEXT_ELEMENT_CT) as TextElementPart[];
 
 export const TEXT_ELEMENT_OBJECT_TYPES = Object.keys(TEXT_ELEMENT_COLLECTIONS) as TextElementObjectType[];
@@ -143,7 +149,7 @@ export async function writeTextElementPart(
   part: TextElementPart,
   source: string,
   transport?: string,
-): Promise<string> {
+): Promise<TextElementWriteResult> {
   checkOperation(safety, OperationType.Update, 'WriteTextElements');
   assertPart(objectType, part);
   if (objectType === 'CLAS' && part !== 'symbols') {
@@ -155,7 +161,7 @@ export async function writeTextElementPart(
   }
   assertTextElementsService(http, objectType);
   const obj = textElementsObject(objectType, name);
-  let changes = '';
+  const result: TextElementWriteResult = { changes: '', state: 'unknown', unchanged: false };
   await http.withStatefulSession(async (session) => {
     const lock = await lockObject(session, safety, obj, 'MODIFY');
     const corr = transport ?? (lock.corrNr || undefined);
@@ -163,12 +169,22 @@ export async function writeTextElementPart(
     try {
       try {
         const before = await readTextElementPart(session, safety, objectType, name, part);
+        // Initial empty CLAS/FUGR saves can strand an inactive pool in SAP (COMPAT-15).
+        // Content equality alone is not enough: an existing draft must never be skipped.
+        if (objectType !== 'PROG' && part === 'symbols' && source === '' && before === '') {
+          const state = await readTextPoolState(session, obj, objectType, name);
+          if (state === 'active') {
+            result.state = state;
+            result.unchanged = true;
+            return;
+          }
+        }
         let url = `${obj}/source/${part}?lockHandle=${encodeURIComponent(lock.lockHandle)}`;
         if (corr) url += `&corrNr=${encodeURIComponent(corr)}`;
         await session.put(url, source, TEXT_ELEMENT_CT[part], { Accept: TEXT_ELEMENT_CT[part] });
         saved = true;
         const after = await readTextElementPart(session, safety, objectType, name, part);
-        changes = textPartChanges(part, before, after);
+        result.changes = textPartChanges(part, before, after);
       } finally {
         await unlockObject(session, obj, lock.lockHandle);
       }
@@ -177,7 +193,7 @@ export async function writeTextElementPart(
         throwTextPoolFailure(
           err,
           'Text elements were saved, but read-back or activation was not confirmed. Read the part before retrying.' +
-            changes,
+            result.changes,
         );
       }
       throw err;
@@ -187,10 +203,38 @@ export async function writeTextElementPart(
       safety,
       obj,
       name,
-      `Text elements were saved, but activation was not confirmed. Retry the same text write.${changes}`,
+      `Text elements were saved, but activation was not confirmed. Retry the same text write.${result.changes}`,
     );
+    try {
+      result.state = await readTextPoolState(session, obj, objectType, name);
+    } catch {
+      // The save and activation request completed; do not turn a failed final read into a retry.
+      result.state = 'unknown';
+    }
   });
-  return changes;
+  return result;
+}
+
+/** Explicit metadata can reveal drafts omitted from the caller's inactive-object feed. */
+async function readTextPoolState(
+  http: AdtHttpClient,
+  uri: string,
+  objectType: TextElementObjectType,
+  name: string,
+): Promise<'active' | 'inactive'> {
+  const response = await http.get(`${uri}?version=inactive`);
+  const pool = parseXml(response.body).textElement as Record<string, unknown> | undefined;
+  const state = pool?.['@_version'];
+  if (
+    !pool ||
+    Array.isArray(pool) ||
+    pool['@_name'] !== name ||
+    pool['@_type'] !== (objectType === 'CLAS' ? 'CLAS/OCX' : `${objectType}/PX`) ||
+    (state !== 'active' && state !== 'inactive')
+  ) {
+    throw new AdtApiError('Cannot verify the text-pool state.', 409, uri);
+  }
+  return state;
 }
 
 /** Activate one text-pool URI only; on failure, prefix `note` to the error and keep it as the hint. */
@@ -233,25 +277,14 @@ export async function withActiveTextPoolForDelete<T>(
   const uri = textElementsObject(objectType, name);
   const lock = await lockObject(session, safety, uri, 'MODIFY');
   try {
-    const response = await session.get(`${uri}?version=inactive`);
-    const pool = parseXml(response.body).textElement as Record<string, unknown> | undefined;
-    const version = pool?.['@_version'];
-    if (
-      !pool ||
-      Array.isArray(pool) ||
-      pool['@_name'] !== name ||
-      pool['@_type'] !== `${objectType}/PX` ||
-      (version !== 'active' && version !== 'inactive')
-    ) {
-      throw new AdtApiError('Cannot verify the text-pool state; the owner was not deleted.', 409, uri);
-    }
+    const version = await readTextPoolState(session, uri, objectType, name);
     if (version === 'inactive') {
       const hint =
         `${objectType} ${name} was not deleted because its text pool is inactive. ` +
         'Review the draft with its author, then explicitly activate the pool and retry deletion. ' +
         (objectType === 'PROG'
           ? `A newly created program needs its first owner activation. If its source cannot compile and you intend to discard it, replace the source with REPORT ${name}., activate the program, then retry deletion.`
-          : 'If SAP leaves an empty pool inactive after activation, resolve the draft in ADT before retrying.');
+          : 'SAP can leave an empty pool inactive despite a successful activation response. Stop and involve the user; ARC-1 has no verified automatic repair.');
       const error = new AdtApiError('Deletion refused because the text pool is inactive.', 409, uri);
       error.extraHint = hint;
       throw error;

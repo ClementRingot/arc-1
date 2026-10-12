@@ -146,13 +146,26 @@ describe('text elements routing and safety', () => {
   });
 
   it.each(['PROG', 'FUGR', 'CLAS'])('forwards an explicit empty %s symbols replacement', async (type) => {
+    mockFetch.mockImplementation((url: string) =>
+      Promise.resolve(
+        mockResponse(
+          200,
+          String(url).includes('_action=LOCK')
+            ? LOCK
+            : String(url).includes('?version=inactive')
+              ? `<rept:textElement xmlns:rept="http://www.sap.com/adt/textelements" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZTEST" adtcore:type="${type === 'CLAS' ? 'CLAS/OCX' : `${type}/PX`}" adtcore:version="inactive"/>`
+              : '',
+          { 'x-csrf-token': 'T' },
+        ),
+      ),
+    );
     const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPWrite', {
       action: 'edit_text_symbols',
       type,
       name: 'ZTEST',
       source: '',
     });
-    expect(result.isError).toBeUndefined();
+    expect(result.isError).toBe(type === 'PROG' ? undefined : true);
     if (type === 'PROG') {
       expect(result.content[0]?.text).not.toContain('Updated and activated');
       expect(result.content[0]?.text).toContain('never been activated');
@@ -161,7 +174,8 @@ describe('text elements routing and safety', () => {
       expect(result.content[0]?.text).toContain('text-pool activation requested');
       expect(result.content[0]?.text).not.toContain('Updated and activated');
     } else {
-      expect(result.content[0]?.text).toContain('Updated and activated');
+      expect(result.content[0]?.text).toContain('SAP still reports the text pool inactive');
+      expect(result.content[0]?.text).not.toContain('Updated and activated');
     }
     const put = calls().find(([, init]) => init?.method === 'PUT');
     expect(put?.[1]?.body).toBe('');
@@ -548,7 +562,9 @@ describe('text-part removal reports', () => {
       const method = init?.method ?? 'GET';
       if (path.includes('_action=LOCK')) return Promise.resolve(mockResponse(200, LOCK));
       let fail = false;
-      let body = '';
+      let body = path.includes('?version=inactive')
+        ? '<rept:textElement xmlns:rept="http://www.sap.com/adt/textelements" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZTEST" adtcore:type="PROG/PX" adtcore:version="active"/>'
+        : '';
       if (path.includes('/source/') && method === 'GET') {
         reads++;
         body = reads === 1 ? old : next;
@@ -597,7 +613,7 @@ describe('text-part removal reports', () => {
     expect(message).toContain('resend the previous complete part');
     expect(message).not.toContain('Removed texts: P_USER');
     expect(message).not.toContain('P_EMPTY');
-    expect(steps()).toEqual(['LOCK', 'GET', 'PUT', 'GET', 'UNLOCK', 'ACTIVATE']);
+    expect(steps()).toEqual(['LOCK', 'GET', 'PUT', 'GET', 'UNLOCK', 'ACTIVATE', 'GET']);
     for (const [, request] of calls().filter(([url]) => String(url).includes('/textelements/'))) {
       expect(request.headers).toMatchObject({ 'X-sap-adt-sessiontype': 'stateful' });
     }

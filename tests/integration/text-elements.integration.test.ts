@@ -34,6 +34,37 @@ describe('text elements via SAPRead/SAPWrite', () => {
     return result.content.map((c) => c.text ?? '').join('\n');
   }
 
+  it('avoids a fresh empty class save and verifies state after real writes', async (ctx) => {
+    requireOrSkip(
+      ctx,
+      client.http.discoveryAcceptFor('/sap/bc/adt/textelements/classes'),
+      `${SkipReason.BACKEND_UNSUPPORTED}: ADT textelements/classes collection absent`,
+    );
+    const name = generateUniqueName('ZARC1_TPS');
+    const objectUrl = `/sap/bc/adt/oo/classes/${name.toLowerCase()}`;
+    const poolUrl = `/sap/bc/adt/textelements/classes/${name.toLowerCase()}`;
+    await call('SAPWrite', {
+      action: 'create',
+      type: 'CLAS',
+      name,
+      package: '$TMP',
+      source: `CLASS ${name} DEFINITION PUBLIC FINAL CREATE PUBLIC.\nENDCLASS.\nCLASS ${name} IMPLEMENTATION.\nENDCLASS.`,
+    });
+    registry.register(objectUrl, 'CLAS', name);
+    await call('SAPActivate', { type: 'CLAS', name });
+    const write = (source: string) => call('SAPWrite', { action: 'edit_text_symbols', type: 'CLAS', name, source });
+    expect(await write('')).toContain('No changes: symbols');
+    expect((await client.http.get(`${poolUrl}?version=inactive`)).body).toContain('adtcore:version="active"');
+    expect(await write('@MaxLength:20\n001=State test\n')).toContain('SAP reports the text pool active');
+    const cleared = await write('');
+    expect(cleared).toContain('SAP reports the text pool active');
+    expect(cleared).toContain('Removed texts: 001');
+    expect((await client.http.get(`${poolUrl}?version=inactive`)).body).toContain('adtcore:version="active"');
+    await call('SAPWrite', { action: 'delete', type: 'CLAS', name });
+    registry.remove(name);
+    await expect(client.http.get(objectUrl)).rejects.toMatchObject({ statusCode: 404 });
+  }, 60_000);
+
   it('explains the first activation needed after writing a new program text pool', async (ctx) => {
     requireOrSkip(
       ctx,
@@ -163,11 +194,19 @@ describe('text elements via SAPRead/SAPWrite', () => {
       }
       await call('SAPActivate', { type, name });
 
+      if (type === 'FUGR') {
+        expect(await call('SAPWrite', { action: 'edit_text_symbols', type, name, source: '' })).toContain(
+          'No changes: symbols',
+        );
+      }
+
       const read = (part?: string) =>
         call('SAPRead', { type: 'TEXT_ELEMENTS', objectType: type, name, ...(part ? { include: part } : {}) });
       const write = async (textPart: string, source: string) => {
         const message = await call('SAPWrite', { action: 'edit_text_symbols', type, name, textPart, source });
         const poolUri = `/sap/bc/adt/textelements/${collection}/${name.toLowerCase()}`;
+        expect(message).toContain('SAP reports the text pool active');
+        expect((await client.http.get(`${poolUri}?version=inactive`)).body).toContain('adtcore:version="active"');
         const inactive = await client.getInactiveObjects();
         expect(inactive.filter((entry) => entry.uri.toLowerCase() === poolUri)).toEqual([]);
         return message;

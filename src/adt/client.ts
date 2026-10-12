@@ -43,6 +43,7 @@ import {
   readTextElements,
   type TextElementObjectType,
   type TextElementPart,
+  type TextElementWriteResult,
   writeTextElementPart,
 } from './text-elements.js';
 import { clampSearchResults, searchSource as executeSourceSearch, toTextSearchObjectType } from './text-search.js';
@@ -1572,7 +1573,7 @@ WHERE d~TABNAME = '${table}' AND d~AS4LOCAL = 'A'`;
     part: TextElementPart,
     source: string,
     transport?: string,
-  ): Promise<string> {
+  ): Promise<TextElementWriteResult> {
     return writeTextElementPart(this.http, this.safety, objectType, name, part, source, transport);
   }
 

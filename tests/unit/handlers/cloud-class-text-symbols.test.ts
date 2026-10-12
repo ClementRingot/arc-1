@@ -15,9 +15,18 @@ describe('Cloud class text symbols', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     resetCachedFeatures();
-    mockFetch.mockImplementation((url: string) =>
-      Promise.resolve(mockResponse(200, url.includes('_action=LOCK') ? lock : '', { 'x-csrf-token': 'T' })),
-    );
+    let saved = false;
+    mockFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (init?.method === 'PUT') saved = true;
+      const body = url.includes('_action=LOCK')
+        ? lock
+        : url.includes('/source/symbols') && !saved
+          ? '@MaxLength:20\n001=Before clear'
+          : url.includes('?version=inactive')
+            ? '<textElement name="ZCL_TEXT" type="CLAS/OCX" version="active"/>'
+            : '';
+      return Promise.resolve(mockResponse(200, body, { 'x-csrf-token': 'T' }));
+    });
   });
   it.each([undefined, 'symbols'])(
     'exposes and dispatches the class pool with part=%s, including clear',

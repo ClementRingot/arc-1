@@ -317,23 +317,32 @@ export async function writeActionEditTextSymbols(ctx: SapWriteContext): Promise<
     return errorResult(`source is required for edit_text_symbols — the ${part} body, e.g. ${TEXT_PART_EXAMPLE[part]}.`);
   }
   await enforcePackageForExistingObject();
-  let changes: string;
+  let result: Awaited<ReturnType<typeof client.writeTextElementPart>>;
   try {
-    changes = await client.writeTextElementPart(type, name, part, source, transport);
+    result = await client.writeTextElementPart(type, name, part, source, transport);
   } finally {
     // A successful PUT can leave a draft even if the subsequent activation fails.
     invalidateWrittenObject();
   }
-  if (type === 'PROG') {
-    return textResult(
-      `Updated ${part} of PROG ${name}; text-pool activation requested.${changes}\n` +
-        `If ${name} has never been activated, use SAPActivate(type="PROG", name="${name}") to activate these texts.`,
-    );
+  if (result.unchanged) {
+    return textResult(`No changes: ${part} of ${type} ${name} are already empty and the text pool is active.`);
   }
-  if (type === 'FUGR') {
-    return textResult(`Updated ${part} of FUGR ${name}; text-pool activation requested.${changes}`);
-  }
-  return textResult(`Updated and activated ${part} of ${type} ${name}.${changes}`);
+  const state =
+    result.state === 'active'
+      ? 'SAP reports the text pool active.'
+      : result.state === 'inactive'
+        ? 'SAP still reports the text pool inactive.'
+        : 'The final text-pool state could not be verified.';
+  const ownerHint =
+    type === 'PROG' && result.state === 'inactive'
+      ? `\nIf ${name} has never been activated, use SAPActivate(type="PROG", name="${name}") to activate these texts.`
+      : '';
+  const incomplete = result.state === 'unknown' || (type !== 'PROG' && result.state === 'inactive');
+  const recovery = incomplete
+    ? '\nNo verified automatic repair is available. Check the pool in ADT or involve the user before another write.'
+    : '';
+  const message = `Updated ${part} of ${type} ${name}; text-pool activation requested. ${state}${result.changes}${ownerHint}${recovery}`;
+  return incomplete ? errorResult(message) : textResult(message);
 }
 
 /** One-line body example per subobject, used in the missing-source error so the caller can retry

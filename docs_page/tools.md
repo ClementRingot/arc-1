@@ -198,7 +198,7 @@ SAPRead(type="CLAS", name="ZCL_ORDER", method="get_name")    — read a specific
 SAPRead(type="CLAS", name="ZBP_TRAVEL", method="lhc_travel~accept") — auto-route a RAP handler to implementations
 SAPRead(type="CLAS", name="ZCL_ORDER", method="setup", include="testclasses") — extract one method from an explicit include
 SAPRead(type="CLAS", name="ZCL_ORDER", grep="select.*from")  — matching lines only, annotated by method
-SAPRead(type="CLAS", name="ZCL_ORDER", include="text_symbols") — maintained text pool (on-prem; see Class text symbols)
+SAPRead(type="CLAS", name="ZCL_ORDER", include="text_symbols") — maintained text pool (see Text elements)
 SAPRead(type="PROG", name="ZTEST_REPORT", grep="WRITE")      — search source, returns matches + context
 SAPRead(type="DDLS", name="ZI_TRAVEL", include="elements")   — extract CDS view elements
 SAPRead(type="DCLS", name="ZI_TRAVEL_DCL")       — CDS access control source
@@ -1182,7 +1182,12 @@ SAPWrite(action="edit_text_symbols", type="PROG", name="ZHU_CREATE", textPart="s
   other text parts; their content is preserved. Unrelated source drafts stay inactive. If a PROG
   has never been activated, finish with `SAPActivate(type="PROG", name="...")` to activate its texts.
   If pool activation fails, the write returns an error; the saved pool may remain inactive.
-  Retry the same text write after resolving the error. Defining the referenced symbols clears
+  After an activation response, ARC-1 reads the pool metadata and reports active, still inactive,
+  or unverified state. Inactive CLAS/FUGR pools and unverified state return an error while
+  retaining the known save. Check the pool in ADT or involve the user before another write;
+  part-body reads cannot establish the pool state. An exactly empty symbols write to an already-empty,
+  explicitly active CLAS/FUGR pool is skipped under its lock: SAP can otherwise leave an empty
+  inactive pool. Existing inactive drafts are never skipped. Defining the referenced symbols clears
   the ATC finding *"Text symbol NNN not defined"* that a bare `'Text'(001)` literal otherwise leaves
   behind; maintaining `selections` is what stops a report's selection screen from showing raw
   parameter names.
@@ -1194,12 +1199,13 @@ SAPWrite(action="edit_text_symbols", type="PROG", name="ZHU_CREATE", textPart="s
   the caller's inactive-object list cannot establish the absence of another user's draft.
   A new program needs its first owner activation before deletion. If its source cannot compile
   and you intend to discard it, replace it with `REPORT <name>.`, activate, then delete. If SAP leaves an empty FUGR
-  pool inactive after activation, resolve the draft in ADT; deletion continues to refuse it. Clean pools and source-only
+  pool inactive after activation, stop and involve the user; there is no verified automatic repair. Clean pools and source-only
   drafts can be deleted while both locks remain held. An unavailable discovery collection
   retains the legacy delete path (7.50); an advertised service error stops deletion.
   To recover an older PROG orphan, recreate and activate the program, then delete it. For a FUGR
-  orphan, recreate and activate the group, write a text part with `edit_text_symbols`, then delete it.
-- **On-prem only, discovery-gated.** The service was verified on 758 and 816 and is absent
+  orphan, recovery depends on the pool state; do not assume another activation repaired it.
+- **Discovery-gated.** CLAS symbols were verified on 758, 816 and BTP ABAP; PROG/FUGR are
+  on-prem object types. The service is absent
   on the tested NW 7.50 system. When discovery is loaded, ARC-1 reports an unavailable service
   without calling the broken legacy endpoint. Without discovery, SAP's actual error surfaces.
 - **Reads:** `objectType` defaults to `PROG`; use `CLAS` or `FUGR` explicitly for those objects.
