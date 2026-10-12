@@ -16,7 +16,8 @@
   "bin": {
     "arc-1": "./bin/arc1.js",
     "arc1": "./bin/arc1.js",
-    "arc1-cli": "./bin/arc1-cli.js"
+    "arc1-cli": "./bin/arc1-cli.js",
+    "arc1-source": "./bin/arc1-source.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
