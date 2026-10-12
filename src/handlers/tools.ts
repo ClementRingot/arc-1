@@ -471,6 +471,20 @@ export function getToolDefinitions(
               (btp ? '' : ', PROG, FUNC, FUGR, INCL, VIEW') +
               '). Falls back to a literal search when the pattern is not valid regex.',
           },
+          lineStart: {
+            type: 'integer',
+            minimum: 1,
+            description:
+              'First source line (1-based, inclusive); requires lineEnd. Text reads only: CLAS, INTF, DDLS, DCLS, BDEF, SRVD, DDLX, TABL' +
+              (btp ? '' : ', PROG, FUNC, INCL') +
+              '. Supports CLAS include; incompatible with grep, method, diff, structured/editable output and signature/element extraction.',
+          },
+          lineEnd: {
+            type: 'integer',
+            minimum: 1,
+            description:
+              'Last source line (inclusive); requires lineStart. Clamped to the source end; a start beyond the source is an error.',
+          },
           ...(btp
             ? {}
             : {

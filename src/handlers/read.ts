@@ -28,6 +28,7 @@ import { getVersionDiff } from '../adt/version-diff.js';
 import type { CachingLayer } from '../cache/caching-layer.js';
 import { extractCdsElements } from '../context/cds-deps.js';
 import { grepSource, grepSourceBlocks } from '../context/grep.js';
+import { readLineRange } from '../context/line-range.js';
 import { extractMethod, formatMethodListing, listMethods } from '../context/method-surgery.js';
 import { logger } from '../server/logger.js';
 import { type CacheSecurityContext, inactiveListUserKey, invalidateInactiveList } from './cache-security.js';
@@ -172,6 +173,29 @@ export async function handleSAPRead(
   const name = String(args.name ?? '');
   const requestedVersion = (args.version ?? 'active') as RequestedSourceVersion;
 
+  const hasLineRange = args.lineStart !== undefined || args.lineEnd !== undefined;
+  if (hasLineRange) {
+    if (args.lineStart === undefined || args.lineEnd === undefined)
+      return errorResult('Both lineStart and lineEnd are required.');
+    const start = Number(args.lineStart);
+    const end = Number(args.lineEnd);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start)
+      return errorResult('lineStart and lineEnd must be positive integers with lineStart <= lineEnd.');
+    if (!['PROG', 'CLAS', 'INTF', 'FUNC', 'INCL', 'DDLS', 'DCLS', 'BDEF', 'SRVD', 'DDLX', 'TABL'].includes(type))
+      return errorResult(`Line ranges are not supported for ${type}; read a single source object instead.`);
+    for (const option of ['grep', 'method', 'action'] as const) {
+      if (args[option] !== undefined) return errorResult(`Do not combine lineStart/lineEnd with ${option}.`);
+    }
+    if (
+      (args.format !== undefined && args.format !== 'text') ||
+      args.includeSignature === true ||
+      args.expand_includes === true
+    )
+      return errorResult('Line ranges require a plain source read; omit format, includeSignature and expand_includes.');
+    if (args.include !== undefined && (type !== 'CLAS' || String(args.include).toLowerCase() === 'text_symbols'))
+      return errorResult('Line ranges support include only for a CLAS source section.');
+  }
+
   if (type === 'SYNTAX')
     return handleSyntaxCheck(client, { type: args.objectType, name, version: args.version, source: args.source });
 
@@ -310,6 +334,13 @@ export async function handleSAPRead(
 
   /** Prepend draft-awareness notes and cache indicator when the server revalidated a cached source. */
   const cachedTextResult = (source: string, cacheHit: boolean, revalidated: boolean, warning?: string): ToolResult => {
+    if (hasLineRange) {
+      const range = readLineRange(source, Number(args.lineStart), Number(args.lineEnd));
+      if (range.invalidRange) return errorResult(range.output);
+      const section = type === 'CLAS' ? `[${name} section=${String(args.include ?? 'main').toLowerCase()}]\n` : '';
+      source = section + range.output;
+    }
+
     const note = warning ? `${warning}\n\n` : '';
     const indicator = cacheHit && revalidated ? '[cached:revalidated]\n' : '';
     return textResult(`${note}${indicator}${source}`);
@@ -435,16 +466,24 @@ export async function handleSAPRead(
         return cachedTextResult(extracted.methodSource, false, false, versionWarning);
       }
       // Only cache the full merged source (no include param), not individual includes
-      if (!args.include) {
+      if (!args.include || (hasLineRange && String(args.include).toLowerCase() === 'main')) {
         const { source, cacheHit, revalidated } = await cachedGet('CLAS', name, effectiveVersion, (ifNoneMatch) =>
           client.getClass(name, undefined, { ifNoneMatch, version: effectiveVersion }),
         );
         return cachedTextResult(source, cacheHit, revalidated, versionWarning);
       }
-      const includeResult = await client.getClass(name, args.include as string | undefined, {
-        version: effectiveVersion,
-      });
-      return cachedTextResult(includeResult.source, false, false, versionWarning);
+      try {
+        const includeResult = hasLineRange
+          ? await client.getClassInclude(name, String(args.include).toLowerCase(), { version: effectiveVersion })
+          : await client.getClass(name, args.include as string | undefined, { version: effectiveVersion });
+        return cachedTextResult(includeResult.source, false, false, versionWarning);
+      } catch (err) {
+        if (hasLineRange && isNotFoundError(err))
+          return errorResult(
+            `No source found for CLAS ${name} include ${args.include}. Check the class name and include.`,
+          );
+        throw err;
+      }
     }
     case 'INTF': {
       const { source, cacheHit, revalidated } = await cachedGet('INTF', name, effectiveVersion, (ifNoneMatch) =>
