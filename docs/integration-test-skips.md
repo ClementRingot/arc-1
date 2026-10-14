@@ -1,6 +1,6 @@
 # Integration + E2E test skips — taxonomy
 
-Both the **integration** suite (`npm run test:integration`) and the **E2E** suite (`npm run test:e2e`) are designed to **skip cleanly** (never fail) when the target SAP system lacks a feature, fixture, or policy permission required by a test. A healthy run on *any* system reports some skips — the question is whether the skips match that system's profile.
+The **integration** suite (`npm run test:integration`) and the **E2E** suite (`npm run test:e2e`) skip recognized missing features, optional fixtures and disabled test opt-ins. Missing required credentials and unexpected backend errors fail the run. Check each skip reason against the target system; a green run alone does not establish coverage.
 
 This doc is the map. When you see a `↓ [SkipReason.…]` line in a test run, look up the category here to understand (a) why it's firing, (b) whether it's expected on your system, and (c) when investigation would be warranted.
 
@@ -8,7 +8,7 @@ Runtime summaries per category are available via:
 - `npm run test:integration:skip-summary` (integration suite)
 - `npm run test:e2e:skip-summary` (E2E suite)
 
-Both use [scripts/ci/summarize-skips.mjs](../scripts/ci/summarize-skips.mjs) with the same taxonomy.
+Both use [scripts/ci/summarize-skips.mjs](../scripts/ci/summarize-skips.mjs) with the same taxonomy. For acceptance, retain the original Vitest exit code and JSON results; these piped summaries are reporting helpers.
 
 > **Note on counts:** the summary tool parses per-test `↓` lines, which vitest emits for tests skipped via `skipTest()` / `requireOrSkip()` (both delegate to `ctx.skip()`). **File- or describe-level skips** — like the whole BTP ABAP suite skipping when `TEST_BTP_SERVICE_KEY_FILE` isn't set, or the gCTS suite when the backend doesn't have gCTS — are rolled up in the `Test Files … skipped` summary line instead. The summary tool reads both and reports the delta; see the "Note:" line at the end of its output if your run shows more total skipped tests than per-test `↓` lines.
 
@@ -58,9 +58,12 @@ Tests typically suffix these with a specific clause explaining *which* fixture o
 |---|---|---|---|
 | `BACKEND_UNSUPPORTED: DOMA reads not supported on this release` | `adt.integration.test.ts` domain metadata (MANDT, BUKRS) (2 tests) | NW 7.50–7.51 | SAP_BASIS ≥ 7.52 |
 | `BACKEND_UNSUPPORTED: /datapreview/ddic endpoint not available on this release` | `adt.integration.test.ts` table contents, POST/CSRF session (4 tests) | NW 7.50 (depends on SP/activation) | Most modern releases |
+| `BACKEND_UNSUPPORTED: API release collection absent` | `api-release.integration.test.ts` | NW 7.50 | Systems advertising `/apireleases` |
+| `/ddic/tables collection not available on this release` | E2E fixture sync | NW 7.50/7.51 without the table collection | Systems advertising `/ddic/tables` |
+| `BACKEND_UNSUPPORTED: ADT domains collection absent` | `llm-arg-normalization.integration.test.ts` DOMA lifecycle | Systems without the domain collection | Systems advertising `/ddic/domains` |
 | `BACKEND_UNSUPPORTED: /ddic/domains endpoint not available on this release` | `crud.lifecycle.integration.test.ts` DOMA CRUD variants (2 tests) | NW 7.50–7.51 | SAP_BASIS ≥ 7.52 |
 | `NW 7.5x ADT_TM gap: reassign requires URL-query params on that release; needs release-aware fallback` | `transport.integration.test.ts` reassignTransport (1 test) | NW 7.50–7.51 | S/4HANA any release |
-| `NW 7.5x ADT_TM gap: release endpoint rejects /newreleasejobs path segment; no client-side workaround` | `transport.integration.test.ts` releaseTransportRecursive (1 test) | NW 7.50–7.51 | S/4HANA any release |
+| `NW 7.5x ADT_TM gap: release endpoint rejects /newreleasejobs path segment; no client-side workaround` | `transport-release.slow.integration.test.ts` releaseTransportRecursive (1 test) | NW 7.50–7.51 | S/4HANA any release |
 
 **When to investigate:** If `DOMA reads not supported` fires on a ≥ 7.54 system, double-check that the ICF service `/sap/bc/adt/ddic` is active in SICF.
 
@@ -118,12 +121,11 @@ On **SAP_BASIS < 7.51** the ADT REST handler `CL_REST_HTTP_HANDLER` does not hon
 
 | Skip message fragment | Affected tests | Typical cause |
 |---|---|---|
-| `SAP credentials not configured` | Every integration test | `TEST_SAP_URL` / `TEST_SAP_USER` / `TEST_SAP_PASSWORD` not set |
 | `TEST_TRANSPORT_PACKAGE not configured` | transport-scoped CRUD (~3 tests) | Opt-in: set `TEST_TRANSPORT_PACKAGE=Z_LLM_TEST_PACKAGE`; write paths additionally require `TEST_TRANSPORT_PACKAGE_WRITE_TESTS=true` |
 | `TEST_TRANSPORT_PACKAGE_WRITE_TESTS not enabled` | transportable-package write cleanup can leave locked CTS tasks | Expected on shared SAP systems unless running a manual destructive cleanup experiment |
 | `NO_FIXTURE (RSHOWTIM)` | search by pattern (1 test) | RSHOWTIM report not on this system |
 
-**When to investigate:** Credentials skipping everything is the expected state on a machine without SAP access. Everything else is a deliberate opt-in.
+**When to investigate:** Basic integration helpers require URL, user and password and fail setup if any is missing. Dedicated BTP suites skip when their service-key configuration is absent; that is not BTP test coverage.
 
 ## Category 6 — Unimplemented / uninstalled features
 
@@ -136,7 +138,7 @@ On **SAP_BASIS < 7.51** the ADT REST handler `CL_REST_HTTP_HANDLER` does not hon
 
 ## Typical skip profile per system (integration)
 
-A quick sanity-check for "is my run healthy?":
+The counts below are historical observations, not current release thresholds. Suite sizes and fixtures have changed; compare named skip reasons with a fresh baseline from the same revision and target.
 
 | System | Typical skip count | Categories that dominate |
 |---|---|---|
@@ -145,7 +147,9 @@ A quick sanity-check for "is my run healthy?":
 | **ABAP Platform 2025** (SAP_BASIS 816, e.g. `a4h-2025.marianzeis.de`) | ~54 / 262 default-profile tests | Reads, release detection, write+activate, and CRUD lifecycle are validated on the tuned 2025 trial. Cat 6 dominates where optional backends are absent: the abapGit ADT bridge is **not installed** on the 2025 trial, so SAPGit tests skip. Local 2026-06-06 default-profile baseline: 208 passed / 54 skipped. |
 | **BTP ABAP (cloud)** | ~80 / 207 tests | Cat 1 (no /DMO), Cat 2 (DDIC changes on cloud), Cat 5 (policy) |
 
-Large deviations from these counts on a given system are the signal. If an S/4HANA box suddenly skips 120+ tests, something broke in fixture sync or auth — the matrix helps identify which category lit up.
+Fixture sync also skips a dependent fixture when its declared prerequisite was skipped, retaining that reason. For example, an unavailable managed table prevents creation of its root and projection CDS views; unrelated fixtures still run.
+
+Investigate newly skipped scenarios, especially previously working features or managed fixtures. Do not use these historical totals as a pass/fail threshold.
 
 ## E2E-specific skip sources
 
@@ -177,7 +181,7 @@ Several SAPRead types return a human-readable placeholder (not an MCP error) whe
 
 `SAPLint action=format` honors the SAP user's configured keyword case (`keywordUpper`, `keywordLower`, `keywordAuto`, `none`). Tests must probe `get_formatter_settings` before asserting specific casing, rather than hardcoding `REPORT`/`DATA` uppercase. Not a skip per se — a test-robustness fix in `smoke.e2e.test.ts`.
 
-### Typical E2E skip profile
+### Historical E2E skip profile
 
 | System | Typical E2E skip count | Categories that dominate |
 |---|---|---|
@@ -186,13 +190,13 @@ Several SAPRead types return a human-readable placeholder (not an MCP error) whe
 | **ABAP Platform 2025** (SAP_BASIS 816) | 4 / 141 default-profile tests when stable | Cat 5 + abapGit ADT bridge absent on the trial (SAPGit tests skip). Local 2026-06-06 default-profile baseline: 137 passed / 4 skipped. LOCK/UNLOCK HTTP 400 `Service cannot be reached` (`400 Session not found`) fails the test; failures were associated with new SAP logon bursts, but the SAP-internal cause remains inferred. See the [session investigation](research/2026-09-27-sap-816-session-failures.md). |
 | **BTP ABAP** | ~30 / 122 tests | Cat 5 (policy), some of Cat 1 |
 
-Anything over ~5 non-transient skips on S/4HANA is a regression signal — most likely a broken fixture sync or an unintended breaking change to a SAPRead handler output.
+Compare the current revision's per-test results and fixture-sync summary. Quickfix tests require their managed class/program fixtures and fail on unexpected errors; a message containing a quickfix URL is not an unsupported-feature reason.
 
 ### Manual slow workflow monitoring
 
 `.github/workflows/sap-slow-tests.yml` runs the slow live SAP profiles on demand through the GitHub Actions **SAP Slow Tests** workflow. It uses the same A4H 2025 `TEST_SAP_*` target as the default Test workflow and keeps recursive transport release disabled unless the operator explicitly sets `enable_transport_release_tests=true`.
 
-Use the manual slow workflow to sample expensive coverage that is intentionally outside the PR path: broad where-used scans, RAP full-stack writes, and recursive transport release guards. Compare its skip summary with the default workflow summary. If Cat 3 ADT lock/unlock routing skips climb persistently across both workflows, investigate SAP-side ADT routing/session stability before changing ARC-1 test assertions.
+Use the manual slow workflow to sample expensive coverage that is intentionally outside the PR path: broad where-used scans, RAP full-stack writes, and recursive transport release guards. Compare its skip summary with the default workflow summary. Unexpected ADT lock/unlock failures remain failures; investigate session stability rather than broadening skip rules. The slow integration profile currently contains only the opt-in transport-release test, so its default run skips that test. The workflow's execution-count check is advisory; verify actual executed cases before claiming slow coverage.
 
 ## Adding a new skip
 

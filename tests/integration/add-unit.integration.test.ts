@@ -1,5 +1,6 @@
 /** Real dispatcher round trips for surgical FORM/MODULE insertion (#776). */
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { fetchDiscoveryDocument } from '../../src/adt/discovery.js';
 import { handleToolCall } from '../../src/handlers/dispatch.js';
 import { DEFAULT_CONFIG } from '../../src/server/types.js';
 import { deleteProgramFixture } from '../helpers/program-cleanup.js';
@@ -14,6 +15,10 @@ describe('add_unit — live', () => {
     expect(result.isError, JSON.stringify(result)).toBeUndefined();
     return result;
   }
+  beforeAll(async () => {
+    client.http.setDiscoveryMap((await fetchDiscoveryDocument(client.http)).map);
+  });
+
   afterAll(async () => {
     for (const object of created.reverse()) {
       if (object.type === 'PROG') {

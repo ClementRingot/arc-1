@@ -22,22 +22,28 @@ important `0.7.0` authorization migration retained below.
      release-please rebuilds that branch from main with `force: true`, so a commit added there is
      lost the next time a feat:/fix: merges. See .claude/commands/release-notes.md. -->
 
-## 1.6.0 — more authoring options and verified results (unreleased)
+## 1.6.0 — optional target access and safer authoring (unreleased)
 
 These notes cover changes already merged for 1.6. No new mandatory settings;
 refresh your MCP client's tool list after upgrading. Final release scope is pending.
 
 | Change | Impact | Action |
 |---|---|---|
+| Per-user target access ([#677](https://github.com/arc-mcp/arc-1/pull/677)) | In BTP multi-system mode, opt-in `ARC1_MULTI_TARGET_AUTHORIZATION=xsuaa-attribute` restricts reader discovery and calls to IAM-assigned targets, not automatically discovered SAP accounts. Default `standard` keeps access unchanged. | Start with [static XSUAA roles](multi-target-authorization.md); IAS is optional. |
 | BAdI implementations ([#939](https://github.com/arc-mcp/arc-1/pull/939)) | Create, update and delete `ENHO/XHB`, including filters. ABAP Cloud requires a released BAdI. | Follow [BAdI write limits](tools.md#badi-implementation-writes-enho). |
 | Table types ([#963](https://github.com/arc-mcp/arc-1/pull/963), [#966](https://github.com/arc-mcp/arc-1/pull/966)) | Author table types on ABAP Cloud and set built-in row length/decimals. | Read back after activation; [key restrictions](tools.md#table-type-updates) remain. |
 | Table administration ([#979](https://github.com/arc-mcp/arc-1/pull/979), [#980](https://github.com/arc-mcp/arc-1/pull/980)) | Update technical settings and manage classic secondary indexes where SAP exposes them. | Review [settings](tools.md#technical-table-settings) and [index activation limits](tools.md#classic-secondary-indexes). |
 | API visibility ([#967](https://github.com/arc-mcp/arc-1/pull/967)) | `apiVisibility` explicitly selects cloud-development/key-user visibility; omission keeps SAP's defaults. | `none` |
 | Text pools ([#965](https://github.com/arc-mcp/arc-1/pull/965), [#976](https://github.com/arc-mcp/arc-1/pull/976), [#977](https://github.com/arc-mcp/arc-1/pull/977), [#978](https://github.com/arc-mcp/arc-1/pull/978)) | Class symbols work on ABAP Cloud. Writes report removed texts, avoid unsafe retries/empty-save drafts and verify pool activation. | Read [text-pool recovery guidance](tools.md#text-elements) before retrying an unverified save. |
-| Source and configuration reads ([#585](https://github.com/arc-mcp/arc-1/pull/585), [#971](https://github.com/arc-mcp/arc-1/pull/971), [#973](https://github.com/arc-mcp/arc-1/pull/973)) | Read inclusive source line windows and SMBC configuration; exact lookup recognizes decorated names. | Supply both `lineStart` and `lineEnd` for a window. |
-| Query results ([#983](https://github.com/arc-mcp/arc-1/pull/983), [#984](https://github.com/arc-mcp/arc-1/pull/984)) | Data-preview cells retain native whitespace; SQL uses CRLF framing. 7.40 SP22 qualification remains open in [#955](https://github.com/arc-mcp/arc-1/issues/955). | Trim cells explicitly if your consumer needs trimmed values. |
+| Source and metadata reads ([#585](https://github.com/arc-mcp/arc-1/pull/585), [#971](https://github.com/arc-mcp/arc-1/pull/971), [#973](https://github.com/arc-mcp/arc-1/pull/973), [#994](https://github.com/arc-mcp/arc-1/pull/994)) | Read inclusive source windows, SMBC configuration and v1-only service-binding metadata; exact lookup recognizes decorated names. | Supply both `lineStart` and `lineEnd` for a window. |
+| Quick fixes ([#995](https://github.com/arc-mcp/arc-1/pull/995)) | Preserves proposal URLs/replacement whitespace and rejects missing classes/interfaces before evaluation. | [Review and syntax-check deltas](tools.md#quickfix-workflow); use `SAPWrite` to save. |
+| Query results ([#983](https://github.com/arc-mcp/arc-1/pull/983), [#984](https://github.com/arc-mcp/arc-1/pull/984)) | Data-preview cells retain native whitespace; SQL uses CRLF framing. The reporter [verified the CRLF fix on 7.40 SP22](https://github.com/arc-mcp/arc-1/issues/955#issuecomment-6143358475). | Trim cells explicitly if your consumer needs trimmed values. |
 | Local source files ([#981](https://github.com/arc-mcp/arc-1/pull/981)) | Codex can send local source through its existing ARC-1 connection without model transcription. | Use the [file workflow](codex-file-source.md). |
 | Larger HTTP writes ([#972](https://github.com/arc-mcp/arc-1/pull/972)) | `ARC1_MAX_HTTP_REQUEST_BYTES` permits an optional increase from 100 KiB, up to 16 MiB. | Check [admission and memory limits](configuration-reference.md#http-request-bodies) before increasing it. |
+| Documentation and tests ([#997](https://github.com/arc-mcp/arc-1/pull/997)) | Clarifies configuration and security guidance; strengthens live workflow checks and cleanup. | `none` |
+
+Known dependency risk: the SAP SDK chain still includes `node-forge` affected by
+[GHSA-86w9-cpqp-85rv](https://github.com/advisories/GHSA-86w9-cpqp-85rv). Recheck the advisory before deployment.
 
 ## 1.5.2 — safer text pools and SAP compatibility fixes (2026-10-10)
 

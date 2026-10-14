@@ -199,7 +199,7 @@ When deploying ARC-1 behind a reverse proxy (nginx, HAProxy, Traefik, etc.) outs
 | **Proxy headers** | Forward `Host`, `X-Real-IP`, and `X-Forwarded-For` to ARC-1 for accurate logging. |
 | **Health check** | Expose `/health` without authentication for load balancer probes. |
 | **Timeouts** | Set proxy read/write timeouts to at least 120 seconds. Some ADT operations (activation, unit tests) can take 30-60 seconds. |
-| **Request size** | ARC-1 currently uses Express's **100 KiB JSON body limit**. A larger proxy limit does not raise it; oversized HTTP tool calls return 413 before dispatch. Use smaller source edits or local stdio for larger payloads. |
+| **Request size** | MCP JSON bodies default to **100 KiB**. Administrators can set `ARC1_MAX_HTTP_REQUEST_BYTES` up to 16 MiB; raising only the proxy limit has no effect. Oversized requests return 413. Align proxy limits and timeouts, and review the [request admission and memory guidance](configuration-reference.md#http-request-bodies) before raising the limit. |
 
 Example nginx configuration is provided in the [API Key Setup](api-key-setup.md#behind-a-reverse-proxy-nginx) guide.
 
@@ -215,7 +215,7 @@ Scopes are assigned to BTP users via role templates and role collections in the 
 
 When `SAP_PP_ENABLED=true`, each MCP user's JWT identity flows through to SAP via BTP Destination Service. For on-premise systems this routes through Connectivity Service + Cloud Connector principal propagation; for BTP ABAP Environment it uses a cloud-to-cloud destination such as `OAuth2UserTokenExchange`. SAP sees the real user identity for authorization checks and audit logging. JWT PP failures always fail closed. Separate strict PP and API-key instances are recommended. With explicit `SAP_PP_STRICT=false`, one supported instance can accept both: JWT calls use PP and API-key calls use the shared technical SAP identity.
 
-Experimental multi-target v1 recommends strict Principal Propagation per destination. It also has a
+Experimental multi-target v1 enforces strict Principal Propagation for PP destinations. It also has a
 separate, default-off `BasicAuthentication` exception for mutation-free on-premise targets. That
 exception requires `ARC1_MULTI_TARGET_ALLOW_BASIC_AUTH=true`, an XSUAA-authenticated caller, one
 non-rolling CF process, a least-privileged technical SAP user, and a principal-type-None Cloud

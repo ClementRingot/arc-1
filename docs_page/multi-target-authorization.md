@@ -30,7 +30,7 @@ Both access modes are supported choices. Upgrading alone does not require any ta
 
 !!! info "Version availability"
 
-    Target authorization is planned for ARC-1 **1.6.0**. Confirm that your selected release includes
+    Target authorization is available from ARC-1 **1.6.0**. Confirm that your selected release includes
     this feature before using the setting; older installations do not enforce it. The required
     companion API is provided by `@arc-mcp/xsuaa-auth` 1.1.0 and included in ARC-1's dependencies.
     Upgrading does not enable enforcement: existing deployments keep standard access until you opt in.

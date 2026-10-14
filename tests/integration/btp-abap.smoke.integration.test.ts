@@ -1,8 +1,9 @@
 /**
- * BTP ABAP Smoke Integration Tests (CI-CAPABLE)
+ * BTP ABAP Smoke Integration Tests (BROWSER OAUTH)
  *
- * Deterministic, non-interactive tests that can run in CI with a service key
- * injected via TEST_BTP_SERVICE_KEY (inline JSON) or TEST_BTP_SERVICE_KEY_FILE.
+ * Read-only smoke tests using a service key from TEST_BTP_SERVICE_KEY (inline JSON)
+ * or TEST_BTP_SERVICE_KEY_FILE. The first request requires browser OAuth login;
+ * this suite does not currently use TEST_BTP_ACCESS_TOKEN.
  *
  * These tests verify core BTP ABAP contracts:
  * - Connectivity and auth chain

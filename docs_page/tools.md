@@ -68,7 +68,7 @@ Use `SAPRead` for exact implementation behavior, an exact reference, one method 
 | `where` | array | No | For TABLE_QUERY: ANDed `{field,op,value?}` conditions. Operators: `=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`, `IN`, `NOT IN`, `IS NULL`, `IS NOT NULL`. IN values are bare comma-separated values; ARC-1 quotes/escapes them. On 758 use `<>`, because accepted `!=` is sent unchanged and SAP rejects it. |
 | `source` | string | No | SYNTAX only: proposed source to check without saving. |
 | `objectType` | string | No | Required for SYNTAX: repository type (e.g. CLAS, PROG, DDLS). For API_STATE: SAP object type (CLAS, INTF, PROG, FUGR, FUNC, etc.) — auto-detected from name if omitted; FUNC also uses `group` |
-| `version` | string | No | Object version: `active`, `inactive`, or `auto`. Source-bearing types default to `active`, except SMBC and [server-driven objects](#server-driven-object-writes), where omitted/`auto` uses SAP's developer view (TABL/DTI explicitly prefers pending source) and explicit `active`/`inactive` must be confirmed by metadata. ENHO uses the developer view and refuses explicit version selection. For DTEL/ENQU metadata, omitted and `auto` use SAP's developer view; explicit `active` or `inactive` is passed to SAP. See [Active vs Inactive Source](#active-vs-inactive-source) below. |
+| `version` | string | No | Object version: `active`, `inactive`, or `auto`. Source-bearing types default to `active`, except SMBC and [server-driven objects](#server-driven-object-writes), where omitted/`auto` uses SAP's developer view (TABL/DTI explicitly prefers pending source) and explicit `active`/`inactive` must be confirmed by metadata. [TABL/DTT settings](#technical-table-settings) also prefer pending state and verify explicit versions. ENHO uses the developer view and refuses explicit version selection. For DTEL/ENQU metadata, omitted and `auto` use SAP's developer view; explicit `active` or `inactive` is passed to SAP. See [Active vs Inactive Source](#active-vs-inactive-source) below. |
 | `force_refresh` | boolean | No | For source reads: bypass the cached source AND the inactive-list cache before reading. Use when you know the object changed outside ARC-1 in a way conditional GET can't catch. |
 | `includeSignature` | boolean | No | For `FUNC` only. When `true`, response is JSON `{source, signature: {importing[], exporting[], changing[], tables[], exceptions[], raising[]}, processingType?, updateTaskKind?}` — each parameter parsed into `{kind, name, type, byValue?, default?, optional?}`; `processingType` reports `normal`/`rfc`/`update` (a metadata read, so it may add `propertiesError` instead if that GET fails). Default `false` (returns plain source body). See [SAPWrite for FUNC](#sapwrite-for-func-create-update-with-structured-parameters) for the round-trip. |
 
@@ -281,7 +281,10 @@ for these resources. Metadata and source are separate reads, not an atomic snaps
 
 ### Active vs Inactive Source
 
-Except for [ENHO](#enhancement-reads), source-bearing types accept a `version` parameter to choose between the activated source and the calling user's unactivated draft:
+For ordinary ABAP/CDS source reads, `version` chooses between the activated source and the
+calling user's unactivated draft as follows. [ENHO](#enhancement-reads) and
+[technical table settings](#technical-table-settings) have separate rules; SMBC and
+server-driven types follow the developer-view rules below.
 
 | `version` | Behaviour |
 |-----------|-----------|
@@ -289,7 +292,7 @@ Except for [ENHO](#enhancement-reads), source-bearing types accept a `version` p
 | `inactive` | Reads the user's draft directly. If no draft exists, SAP falls back to the active source and the response is prefixed with: *"No inactive draft exists for this object on the server. Returning the active version."* |
 | `auto` | Resolves client-side via the cached inactive-objects list: returns the draft if one exists, otherwise active. No warning is prefixed (the caller explicitly opted into "show me my view"). |
 
-Server-driven types (such as DRTY, DESD, DTDC and UIAD) preserve their developer view when
+SMBC and server-driven types (such as DRTY, DESD, DTDC and UIAD) preserve their developer view when
 `version` is omitted or `auto`: SAP selects the draft when available, otherwise active. They bypass
 source and inactive-list caches. Explicit `active`/`inactive` is sent to both metadata and source;
 if metadata reports another version or no version, ARC-1 returns an error without source. This
@@ -1177,8 +1180,8 @@ SAPWrite(action="edit_text_symbols", type="PROG", name="ZHU_CREATE", textPart="s
 
 - **Body formats:** `symbols` — one `@MaxLength:NN` line per symbol, then `NNN=text`, blank-line
   separated (a shared or missing `@MaxLength` is rejected with `406 "Text elements contain errors"`).
-  `selections` — one `PARAM=text` line per field, at most 30 characters (including a supplied
-  dictionary label). Keep the preceding `@DDICReference` line to retain a dictionary reference;
+  `selections` — one `PARAM=text` line per field; the text after `=` is limited to 30 characters,
+  including a supplied dictionary label. Keep the preceding `@DDICReference` line to retain a dictionary reference;
   `PARAM=?...` means no maintained text. `headings` — `listHeader=` plus `columnHeader_N=` lines.
   SAP validates these formats and lengths.
 - **Replacement, not merge:** each write replaces the complete selected part. Read it first and
@@ -2164,10 +2167,11 @@ SAPDiagnose(action="sql_trace_directory")                           — get SAP'
 ### Quickfix Workflow
 
 1. Run `SAPDiagnose(action="atc" ...)` or `SAPDiagnose(action="syntax" ...)`.
-2. Check ATC findings for `hasQuickfix: true`.
+2. For ATC findings, check `hasQuickfix: true`.
 3. Call `SAPDiagnose(action="quickfix", ...)` for the relevant line/column.
 4. Select a proposal and call `SAPDiagnose(action="apply_quickfix", ...)` to receive deltas.
-5. Apply those deltas to source and persist via `SAPWrite(action="update" | "edit_method", ...)`.
+5. Apply the exact deltas to the original buffer, preserving whitespace. Review every affected
+   object and syntax-check the edited source before saving via `SAPWrite(action="update" | "edit_method", ...)`.
 
 ---
 

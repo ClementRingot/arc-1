@@ -110,16 +110,16 @@ define view entity ${objectName}
   key obj_name as ObjectName
 }`;
 
-    const createDdls = await callTool(client, 'SAPWrite', {
-      action: 'create',
-      type: 'DDLS',
-      name: objectName,
-      package: '$TMP',
-      source: ddlSource,
-    });
-    expectToolSuccessOrSkip(ctx, createDdls);
-
+    let ktdCreateAttempted = false;
     try {
+      const createDdls = await callTool(client, 'SAPWrite', {
+        action: 'create',
+        type: 'DDLS',
+        name: objectName,
+        package: '$TMP',
+        source: ddlSource,
+      });
+      expectToolSuccessOrSkip(ctx, createDdls);
       // Step 2: Activate the DDLS (KTD needs an active parent to attach to)
       const activateDdls = await callTool(client, 'SAPActivate', {
         action: 'activate',
@@ -129,6 +129,7 @@ define view entity ${objectName}
       expectToolSuccess(activateDdls);
 
       // Step 3: Create KTD for the DDLS
+      ktdCreateAttempted = true;
       const createKtd = await callTool(client, 'SAPWrite', {
         action: 'create',
         type: 'SKTD',
@@ -195,16 +196,16 @@ define view entity ${objectName}
       const deletedText = expectToolSuccess(readDeleted);
       expect(deletedText).toContain('No Knowledge Transfer Document');
     } finally {
-      // Cleanup: delete the DDLS (best-effort — KTD should already be deleted)
+      // A failed source PUT can leave a DDLS shell; cleanup also covers that create attempt.
       try {
-        await callTool(client, 'SAPWrite', { action: 'delete', type: 'SKTD', name: objectName });
-      } catch {
-        // best-effort-cleanup — may already be deleted
-      }
-      try {
-        await callTool(client, 'SAPWrite', { action: 'delete', type: 'DDLS', name: objectName });
-      } catch {
-        // best-effort-cleanup
+        if (ktdCreateAttempted) {
+          const remaining = expectToolSuccess(await callTool(client, 'SAPRead', { type: 'SKTD', name: objectName }));
+          if (!remaining.includes('No Knowledge Transfer Document')) {
+            expectToolSuccess(await callTool(client, 'SAPWrite', { action: 'delete', type: 'SKTD', name: objectName }));
+          }
+        }
+      } finally {
+        expectToolSuccess(await callTool(client, 'SAPWrite', { action: 'delete', type: 'DDLS', name: objectName }));
       }
     }
   });

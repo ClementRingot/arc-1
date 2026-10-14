@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { AdtClient } from '../../src/adt/client.js';
 import { fetchDiscoveryDocument } from '../../src/adt/discovery.js';
+import { AdtApiError } from '../../src/adt/errors.js';
 import { handleToolCall } from '../../src/handlers/dispatch.js';
 import { DEFAULT_CONFIG } from '../../src/server/types.js';
 import { requireOrSkip, SkipReason } from '../helpers/skip-policy.js';
@@ -14,6 +15,7 @@ describe('technical table settings through public dispatch', () => {
     client = getTestClient();
     client.safety.allowedPackages = ['$TMP'];
     client.http.setDiscoveryMap((await fetchDiscoveryDocument(client.http)).map);
+    expect(client.http.hasDiscoveryData(), 'ADT discovery must succeed before capability checks').toBe(true);
   });
   async function call(tool: string, args: Record<string, unknown>): Promise<string> {
     const result = await handleToolCall(client, config, tool, args);
@@ -27,8 +29,23 @@ describe('technical table settings through public dispatch', () => {
       client.http.discoveryAcceptFor('/sap/bc/adt/ddic/db/settings'),
       `${SkipReason.BACKEND_UNSUPPORTED}: ADT technical settings collection absent`,
     );
-    const name = generateUniqueName('ZARC1_TS');
+    const name = generateUniqueName('ZATS');
     const tableUrl = `/sap/bc/adt/ddic/tables/${name.toLowerCase()}`;
+    // Register before creation: a failed follow-up PUT can leave the owned table shell.
+    ctx.onTestFinished(async () => {
+      try {
+        await client.http.get(tableUrl);
+      } catch (error) {
+        expect(error).toBeInstanceOf(AdtApiError);
+        expect(error).toMatchObject({ statusCode: 404 });
+        return;
+      }
+      await call('SAPWrite', { action: 'delete', type: 'TABL', name });
+      await expect(client.http.get(tableUrl)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(client.http.get(`/sap/bc/adt/ddic/db/settings/${name.toLowerCase()}`)).rejects.toMatchObject({
+        statusCode: 404,
+      });
+    });
     await call('SAPWrite', {
       action: 'create',
       type: 'TABL',
@@ -45,13 +62,6 @@ define table ${name.toLowerCase()} {
  key id : abap.char(10) not null;
  status : abap.char(1);
 }`,
-    });
-    ctx.onTestFinished(async () => {
-      await call('SAPWrite', { action: 'delete', type: 'TABL', name });
-      await expect(client.http.get(tableUrl)).rejects.toMatchObject({ statusCode: 404 });
-      await expect(client.http.get(`/sap/bc/adt/ddic/db/settings/${name.toLowerCase()}`)).rejects.toMatchObject({
-        statusCode: 404,
-      });
     });
     const read = async () => JSON.parse(await call('SAPRead', { type: 'TABL/DTT', name }));
     const write = (patch: unknown) =>

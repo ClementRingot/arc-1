@@ -16,6 +16,7 @@ import { fetchDiscoveryDocument } from '../../src/adt/discovery.js';
 import { handleToolCall } from '../../src/handlers/dispatch.js';
 import { DEFAULT_CONFIG } from '../../src/server/types.js';
 import { deleteProgramFixture } from '../helpers/program-cleanup.js';
+import { requireOrSkip, SkipReason } from '../helpers/skip-policy.js';
 import { generateUniqueName } from './crud-harness.js';
 import { getTestClient, requireSapCredentials } from './helpers.js';
 
@@ -26,6 +27,7 @@ describe('Issue #360 — LLM arg-pollution hardening (live SAP)', () => {
     requireSapCredentials();
     client = getTestClient();
     client.http.setDiscoveryMap((await fetchDiscoveryDocument(client.http)).map);
+    expect(client.http.hasDiscoveryData(), 'ADT discovery must succeed before capability checks').toBe(true);
   });
 
   // A failed delete must fail the test; disposable programs may need their first activation.
@@ -39,7 +41,12 @@ describe('Issue #360 — LLM arg-pollution hardening (live SAP)', () => {
     if (result.isError) throw new Error(`Cleanup of ${name}: ${text}`);
   }
 
-  it('stringified signExists/lowercase "false" create a NON-sign domain (no silent inversion)', async () => {
+  it('stringified signExists/lowercase "false" create a NON-sign domain (no silent inversion)', async (ctx) => {
+    requireOrSkip(
+      ctx,
+      client.http.discoveryAcceptFor('/sap/bc/adt/ddic/domains'),
+      `${SkipReason.BACKEND_UNSUPPORTED}: ADT domains collection absent`,
+    );
     const name = generateUniqueName('ZARC360D');
     try {
       const created = await handleToolCall(client, DEFAULT_CONFIG, 'SAPWrite', {

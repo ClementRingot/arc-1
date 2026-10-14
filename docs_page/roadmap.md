@@ -1,6 +1,6 @@
 # ARC-1 Idea Roadmap
 
-**Last reviewed:** 2026-10-09
+**Last reviewed:** 2026-10-14
 
 This page is ARC-1's idea parking lot. It records worthwhile work that is **not implemented now** so
 it does not disappear, but it is not a delivery schedule and it does not answer "what should we do
@@ -71,7 +71,6 @@ sequence.
 | [SEC-16](#sec-16) | Client ID Metadata Documents (CIMD / SEP-991) | P1 | XL | Parked proposal | Auth / Compatibility |
 | [SEC-15](#sec-15) | Durable DCR signing-key lifecycle | P2 | L | Needs research | Auth / Operations |
 | [COMPAT-06](#compat-06) | Standard outbound proxy support | P2 | M | Ready | Compatibility |
-| [COMPAT-13](#compat-13) | NW 7.40 CRLF qualification | P1 | S | Needs research | Compatibility |
 | [COMPAT-07](#compat-07) | CDS view-entity replacement lineage | P2 | S | Needs research | Compatibility |
 | [COMPAT-16](#compat-16) | API-release directory cleanup | P2 | S | Needs research | Compatibility |
 | [COMPAT-10](#compat-10) | CDS set-operation lineage | P2 | M | Needs research | Compatibility |
@@ -234,24 +233,6 @@ misleading.
 **Resume with.** Use the existing
 [implementation plan](https://github.com/arc-mcp/arc-1/blob/main/docs/plans/http-forward-proxy-env-support.md);
 test redirects, TLS verification, `NO_PROXY`, OAuth metadata, SAP cookies, and BTP isolation.
-
-<a id="compat-13"></a>
-### COMPAT-13 — NW 7.40 CRLF qualification
-
-- **Priority / effort / status:** P1 / S / Needs research
-- **Category:** Compatibility
-
-**Remaining gap.** [#955](https://github.com/arc-mcp/arc-1/issues/955) now has a
-740 SP22 LF/CRLF comparison: even a 200-character LF query fails, while the same
-SQL with CRLF succeeds. ARC-1 sends CRLF for caller lines and inserted wraps,
-retaining the 255-character payload-line limit. The updated build still needs an
-affected-system retest; the reporter reconstructed bodies rather than capturing the wire.
-
-**Resume with.** Run the reporter's offered branch matrix on 740 SP22: the short
-LF/CRLF pair, 254/255/256-character boundaries, long restrictive tails and wrapped
-IN-list chunks. Record the sent separators, status and expected rows. No total-query
-cap or COUNT rewrite is justified. See the
-[framing plan](https://github.com/arc-mcp/arc-1/blob/main/docs/plans/2026-10-12-freestyle-crlf.md).
 
 <a id="compat-07"></a>
 ### COMPAT-07 — CDS view-entity replacement lineage

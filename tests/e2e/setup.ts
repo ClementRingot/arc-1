@@ -64,6 +64,13 @@ export function classifyFixtureError(message: string): string | null {
   if (/\/sap\/bc\/adt\/ddic\/dataelements\b.*Unsupported Media Type/i.test(message)) {
     return 'DTEL v2 content type not supported on this release';
   }
+  if (
+    message.includes(
+      'Transparent table writes via ADT REST are not available on this system (/sap/bc/adt/ddic/tables/ is not exposed',
+    )
+  ) {
+    return '/ddic/tables collection not available on this release';
+  }
   if (/\/sap\/bc\/adt\/ddic\/tables(?:\?|\b).*(?:does not exist|not found)/i.test(message)) {
     return '/ddic/tables collection not available on this release';
   }
@@ -89,6 +96,13 @@ export async function syncPersistentFixtures(client: Client): Promise<FixtureSyn
 
   for (const obj of PERSISTENT_OBJECTS) {
     const label = `${obj.type} ${obj.name}`;
+    const dependency = 'dependsOn' in obj && summary.skipped.find((skip) => skip.label === obj.dependsOn);
+    if (dependency) {
+      const reason = `Required fixture ${dependency.label} was skipped: ${dependency.reason}`;
+      console.warn(`    [setup] ${label}: skipping — ${reason}`);
+      summary.skipped.push({ label, reason });
+      continue;
+    }
     const expectedType = obj.type.toUpperCase();
     const desiredSource = normalizeSource(readFixture(obj.fixture), obj.type);
     const existingTypes = await findExistingObjectTypes(client, obj.name);

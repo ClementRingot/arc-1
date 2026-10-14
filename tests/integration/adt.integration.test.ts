@@ -845,16 +845,22 @@ describe('ADT Integration Tests', () => {
 
     it('SAPSearch result for V_USR_NAME emits adtcore:type="VIEW/DV"', async () => {
       const results = await client.searchObject('V_USR_NAME', 5);
-      const view = results.find((r) => r.objectName === 'V_USR_NAME');
+      const view = results.find(
+        (r) => r.uri.toLowerCase() === '/sap/bc/adt/vit/wb/object_type/viewdv/object_name/v_usr_name',
+      );
       expect(view).toBeDefined();
       expect(view!.objectType).toBe('VIEW/DV');
+      expect(view!.objectName).toMatch(/^V_USR_NAME(?: \(.+\))?$/i);
     });
 
     it('SAPSearch result for SE38 emits adtcore:type="TRAN/T"', async () => {
       const results = await client.searchObject('SE38', 5);
-      const tcode = results.find((r) => r.objectName === 'SE38');
+      const tcode = results.find(
+        (r) => r.uri.toLowerCase() === '/sap/bc/adt/vit/wb/object_type/trant/object_name/se38',
+      );
       expect(tcode).toBeDefined();
       expect(tcode!.objectType).toBe('TRAN/T');
+      expect(tcode!.objectName).toMatch(/^SE38(?: \(.+\))?$/i);
     });
 
     it('SAPSearch result for BAPI_USER_GETLIST emits adtcore:type="FUGR/FF"', async () => {
@@ -862,9 +868,12 @@ describe('ADT Integration Tests', () => {
       // entry FUGR/FF → FUNC routes correctly to client.getFunction at the
       // handler layer (covered by unit tests).
       const results = await client.searchObject('BAPI_USER_GETLIST', 5);
-      const fm = results.find((r) => r.objectName === 'BAPI_USER_GETLIST');
+      const fm = results.find((r) =>
+        /^\/sap\/bc\/adt\/functions\/groups\/[^/?#]+\/fmodules\/bapi_user_getlist$/i.test(r.uri),
+      );
       expect(fm).toBeDefined();
       expect(fm!.objectType).toBe('FUGR/FF');
+      expect(fm!.objectName).toMatch(/^BAPI_USER_GETLIST(?: \(.+\))?$/i);
     });
 
     it('reads domain metadata (MANDT)', async (ctx) => {
@@ -1868,18 +1877,32 @@ describe('ADT Integration Tests', () => {
   // (whether SAP leaves a ghost behind after delete is release-/auth-dependent).
 
   describe('SAPSearch tadir_lookup source variants', () => {
+    const config = {
+      arc1Port: 8080,
+      arc1HttpAddr: '0.0.0.0:8080',
+      toolMode: 'standard',
+    } as unknown as import('../../src/server/types.js').ServerConfig;
+
+    async function cleanupDdls(name: string): Promise<void> {
+      const { handleToolCall } = await import('../../src/handlers/dispatch.js');
+      const objectUri = `/sap/bc/adt/ddic/ddl/sources/${name}`;
+      // A failed source PUT can leave a shell even when SAPWrite create reports an error.
+      try {
+        await client.http.get(objectUri);
+      } catch (error) {
+        if (error instanceof AdtApiError && error.statusCode === 404) return;
+        throw error;
+      }
+      const result = await handleToolCall(client, config, 'SAPWrite', { action: 'delete', type: 'DDLS', name });
+      expect(result.isError, JSON.stringify(result)).toBeUndefined();
+      await expect(client.http.get(objectUri)).rejects.toMatchObject({ statusCode: 404 });
+    }
+
     it('source=adt|db|both all find a freshly-created Z DDLS in $TMP (no splitBrain)', async (ctx) => {
       requireOrSkip(ctx, process.env.TEST_SAP_URL, SkipReason.NO_CREDENTIALS);
       const { generateUniqueName } = await import('./crud-harness.js');
       const { handleToolCall } = await import('../../src/handlers/dispatch.js');
       const ddlsName = generateUniqueName('ZRES_TADIR_');
-      const config = {
-        arc1Port: 8080,
-        arc1HttpAddr: '0.0.0.0:8080',
-        toolMode: 'standard',
-      } as unknown as Parameters<typeof handleToolCall>[1];
-
-      let created = false;
       try {
         // 1. Create a simple Z DDLS view in $TMP
         const createResult = await handleToolCall(client, config, 'SAPWrite', {
@@ -1894,7 +1917,6 @@ describe('ADT Integration Tests', () => {
           lintBeforeWrite: false,
         });
         expect(createResult.isError).toBeUndefined();
-        created = true;
 
         // 2. Activate the view so ADT can resolve it (info-system filters drafts).
         const activateResult = await handleToolCall(client, config, 'SAPActivate', {
@@ -1934,18 +1956,7 @@ describe('ADT Integration Tests', () => {
         expect(bothPayload.lookups[0]?.found).toBe(true);
         expect(bothPayload.splitBrain).toBeUndefined();
       } finally {
-        // best-effort-cleanup
-        if (created) {
-          try {
-            await handleToolCall(client, config, 'SAPWrite', {
-              action: 'delete',
-              type: 'DDLS',
-              name: ddlsName,
-            });
-          } catch {
-            // best-effort-cleanup; $TMP DDLS will time out eventually
-          }
-        }
+        await cleanupDdls(ddlsName);
       }
     });
 
@@ -1954,56 +1965,52 @@ describe('ADT Integration Tests', () => {
       const { generateUniqueName } = await import('./crud-harness.js');
       const { handleToolCall } = await import('../../src/handlers/dispatch.js');
       const ddlsName = generateUniqueName('ZRES_TGHOST_');
-      const config = {
-        arc1Port: 8080,
-        arc1HttpAddr: '0.0.0.0:8080',
-        toolMode: 'standard',
-      } as unknown as Parameters<typeof handleToolCall>[1];
-
       // Create + delete cycle, then probe all three sources. Either outcome is a passing test:
       //  (a) ADT and DB both report `found:false` → clean delete, no splitBrain.
       //  (b) DB reports `found:true`, ADT reports `found:false` → TADIR ghost; splitBrain=[name].
       // The contract under test is response shape + consistency, not the presence of a ghost.
-      const createResult = await handleToolCall(client, config, 'SAPWrite', {
-        action: 'create',
-        type: 'DDLS',
-        name: ddlsName,
-        package: '$TMP',
-        description: 'tadir_lookup ghost-probe transient',
-        source:
-          `@AccessControl.authorizationCheck: #NOT_REQUIRED\n` +
-          `define view entity ${ddlsName} as select from t000 { key mandt as Client }`,
-        lintBeforeWrite: false,
-      });
-      expect(createResult.isError).toBeUndefined();
-      // Delete without activating — SAP's draft cleanup is the most likely ghost-producer path.
-      const deleteResult = await handleToolCall(client, config, 'SAPWrite', {
-        action: 'delete',
-        type: 'DDLS',
-        name: ddlsName,
-      });
-      // The delete may still report an error if the draft is in a tricky state — but the
-      // post-condition we care about is the lookup shape.
-      void deleteResult;
+      try {
+        const createResult = await handleToolCall(client, config, 'SAPWrite', {
+          action: 'create',
+          type: 'DDLS',
+          name: ddlsName,
+          package: '$TMP',
+          description: 'tadir_lookup ghost-probe transient',
+          source:
+            `@AccessControl.authorizationCheck: #NOT_REQUIRED\n` +
+            `define view entity ${ddlsName} as select from t000 { key mandt as Client }`,
+          lintBeforeWrite: false,
+        });
+        expect(createResult.isError).toBeUndefined();
+        // Delete without activating — SAP's draft cleanup is the most likely ghost-producer path.
+        const deleteResult = await handleToolCall(client, config, 'SAPWrite', {
+          action: 'delete',
+          type: 'DDLS',
+          name: ddlsName,
+        });
+        expect(deleteResult.isError, JSON.stringify(deleteResult)).toBeUndefined();
 
-      const bothLookup = await handleToolCall(client, config, 'SAPSearch', {
-        searchType: 'tadir_lookup',
-        names: [ddlsName],
-        source: 'both',
-      });
-      expect(bothLookup.isError).toBeUndefined();
-      const payload = JSON.parse(bothLookup.content[0]?.text ?? '{}');
+        const bothLookup = await handleToolCall(client, config, 'SAPSearch', {
+          searchType: 'tadir_lookup',
+          names: [ddlsName],
+          source: 'both',
+        });
+        expect(bothLookup.isError).toBeUndefined();
+        const payload = JSON.parse(bothLookup.content[0]?.text ?? '{}');
 
-      // Shape invariants — same regardless of ghost-vs-clean outcome:
-      expect(Array.isArray(payload.lookups)).toBe(true);
-      expect(payload.lookups[0]?.name).toBe(ddlsName);
-      // Either splitBrain reports the ghost OR both sources agree (no splitBrain field).
-      if (payload.splitBrain) {
-        expect(payload.splitBrain).toEqual([ddlsName]);
-        expect(Array.isArray(payload.warnings)).toBe(true);
-        expect(payload.warnings[0]).toContain(ddlsName);
-      } else {
-        expect(payload.lookups[0]?.found).toBe(false);
+        // Shape invariants — same regardless of ghost-vs-clean outcome:
+        expect(Array.isArray(payload.lookups)).toBe(true);
+        expect(payload.lookups[0]?.name).toBe(ddlsName);
+        // Either splitBrain reports the ghost OR both sources agree (no splitBrain field).
+        if (payload.splitBrain) {
+          expect(payload.splitBrain).toEqual([ddlsName]);
+          expect(Array.isArray(payload.warnings)).toBe(true);
+          expect(payload.warnings[0]).toContain(ddlsName);
+        } else {
+          expect(payload.lookups[0]?.found).toBe(false);
+        }
+      } finally {
+        await cleanupDdls(ddlsName);
       }
     });
   });
@@ -2780,6 +2787,7 @@ describe('FUGR structural include update (FEAT-18 sibling)', () => {
       toolMode: 'standard',
     } as unknown as Parameters<typeof handleToolCall>[1];
     const client = getTestClient();
+    client.http.setDiscoveryMap((await fetchDiscoveryDocument(client.http)).map);
     const group = generateUniqueName('ZARC1_FGI');
     const topInclude = `L${group}TOP`;
     const marker = `* arc-1 structural include write ${group}`;
@@ -2821,9 +2829,8 @@ describe('FUGR structural include update (FEAT-18 sibling)', () => {
       const back = await client.http.get(`${includeUrl}/source/main`);
       expect(back.body).toContain(marker);
     } finally {
-      await handleToolCall(client, config, 'SAPWrite', { action: 'delete', type: 'FUGR', name: group }).catch(() => {
-        // best-effort-cleanup
-      });
+      const cleanup = await handleToolCall(client, config, 'SAPWrite', { action: 'delete', type: 'FUGR', name: group });
+      expect(cleanup.isError, JSON.stringify(cleanup)).toBeUndefined();
     }
   }, 90_000);
 });
@@ -2993,64 +3000,6 @@ describe('TTYP table type read + create (FEAT-65)', () => {
     expect(result.content[0]?.text).toContain('rowType');
   }, 30_000);
 });
-// ─── API release write (set_api_state) — FEAT-02 write counterpart ─────
-// Live-verified on a4h 758 (v10) + 816 (v10): create a class → release C1 → read RELEASED back →
-// revoke → delete. v10 is used for GET+PUT (v11 500s on 758).
-describe('SAPManage set_api_state (API release write)', () => {
-  it('releases a class C1 contract, reads RELEASED back via API_STATE, then revokes', async (ctx) => {
-    requireOrSkip(ctx, process.env.TEST_SAP_URL, SkipReason.NO_CREDENTIALS);
-    const { generateUniqueName } = await import('./crud-harness.js');
-    const { handleToolCall } = await import('../../src/handlers/dispatch.js');
-    const config = {
-      arc1Port: 8080,
-      arc1HttpAddr: '0.0.0.0:8080',
-      toolMode: 'standard',
-    } as unknown as Parameters<typeof handleToolCall>[1];
-    const client = getTestClient();
-    const name = generateUniqueName('ZCL_ARC1_ARS');
-    try {
-      const created = await handleToolCall(client, config, 'SAPWrite', {
-        action: 'create',
-        type: 'CLAS',
-        name,
-        package: '$TMP',
-        description: 'ARC-1 IT api-release',
-        source: `CLASS ${name.toLowerCase()} DEFINITION PUBLIC FINAL CREATE PUBLIC.\n  PUBLIC SECTION.\nENDCLASS.\nCLASS ${name.toLowerCase()} IMPLEMENTATION.\nENDCLASS.`,
-      });
-      expect(created.isError).toBeUndefined();
-      const activated = await handleToolCall(client, config, 'SAPActivate', { type: 'CLAS', name });
-      expect(activated.isError).toBeUndefined();
-
-      const released = await handleToolCall(client, config, 'SAPManage', {
-        action: 'set_api_state',
-        name,
-        objectType: 'CLAS',
-        apiState: 'RELEASED',
-      });
-      expect(released.isError).toBeUndefined();
-      expect(released.content[0]?.text).toContain('RELEASED');
-
-      const read = await handleToolCall(client, config, 'SAPRead', { type: 'API_STATE', name, objectType: 'CLAS' });
-      const info = JSON.parse(read.content[0]?.text ?? '{}') as {
-        contracts?: Array<{ contract: string; state: string }>;
-      };
-      expect(info.contracts?.find((c) => c.contract === 'C1')?.state).toBe('RELEASED');
-
-      const revoked = await handleToolCall(client, config, 'SAPManage', {
-        action: 'set_api_state',
-        name,
-        objectType: 'CLAS',
-        apiState: 'NOT_RELEASED',
-      });
-      expect(revoked.isError).toBeUndefined();
-    } finally {
-      await handleToolCall(client, config, 'SAPWrite', { action: 'delete', type: 'CLAS', name }).catch(() => {
-        // best-effort-cleanup
-      });
-    }
-  }, 90_000);
-});
-
 /**
  * Golden case on a4h: A4HK906291 lists one LIMU METH for ZCL_ARC1_DEMO_CALC, whose main
  * include feed is 00002 (this transport), 00000 (active), 00001 — in that order. The review

@@ -1,6 +1,7 @@
 /** Cross-release live edge cases for SAPWrite edit_unit (issue #558). */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { fetchDiscoveryDocument } from '../../src/adt/discovery.js';
 import { handleToolCall } from '../../src/handlers/dispatch.js';
 import type { ToolResult } from '../../src/handlers/shared.js';
 import { DEFAULT_CONFIG } from '../../src/server/types.js';
@@ -16,7 +17,10 @@ describe('edit_unit — live edge cases (issue #558)', () => {
   const topInclude = `L${functionGroup}TOP`;
   const created: Array<{ type: 'PROG' | 'INCL' | 'FUGR'; name: string }> = [];
 
-  beforeAll(() => requireSapCredentials());
+  beforeAll(async () => {
+    requireSapCredentials();
+    client.http.setDiscoveryMap((await fetchDiscoveryDocument(client.http)).map);
+  });
 
   afterAll(async () => {
     const call = (tool: string, args: Record<string, unknown>) => handleToolCall(client, DEFAULT_CONFIG, tool, args);

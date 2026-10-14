@@ -51,10 +51,10 @@ text(await tools.mcp__arc_1__SAPWrite({
 }));
 ```
 
-The same transfer works for `create` or surgical actions such as `edit_unit`: supply
-that action's normal arguments and the correct file content (whole object versus unit
-body). Verification is mandatory before the write: truncated output can still be valid
-JSON. The digest detects transfer damage; it does not approve source content or protect
+The same transfer works for `create` or surgical actions: supply the action's normal
+arguments and file content — full object source for `create`/`update`, a method body for
+`edit_method`, or a complete FORM/MODULE block for `edit_unit`. Verification is mandatory
+before the write: truncated output can still be valid JSON. The digest detects transfer damage; it does not approve source content or protect
 against another developer editing SAP. Use existing concurrency checks where supported.
 
 ## Limits and BTP

@@ -24,3 +24,11 @@ an unsupported endpoint exists on every release; 750's freestyle endpoint was ab
 in prior qualification. COMPAT-13 retains only the affected-system retest.
 
 Evidence: [reporter matrix](https://github.com/arc-mcp/arc-1/issues/955#issuecomment-6119866814).
+
+## Qualification completed (2026-10-13)
+
+The reporter retested revision `9f642f0f` on SAP_BASIS 740 SP22: all 16 cases and
+20 POSTs passed with expected rows. Actual transmitted bodies confirmed CRLF,
+including wrapped IN-list chunks, with no line over 255 characters. This is
+[reporter evidence](https://github.com/arc-mcp/arc-1/issues/955#issuecomment-6143358475),
+not a local 740 run. Issue #955 is closed; COMPAT-13 has been removed from the roadmap.

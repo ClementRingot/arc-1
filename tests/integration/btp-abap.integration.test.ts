@@ -2,7 +2,7 @@
  * BTP ABAP Extended Integration Tests (LOCAL ONLY)
  *
  * These tests require interactive browser login and are NOT run in CI.
- * For CI-capable BTP tests, see btp-abap.smoke.integration.test.ts.
+ * For a smaller read-only suite (also browser OAuth), see btp-abap.smoke.integration.test.ts.
  *
  * Reasons for local-only:
  * - BTP free tier instances are stopped each night

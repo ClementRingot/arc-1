@@ -160,7 +160,7 @@ describe('FUNC parameter lifecycle (issue #252)', () => {
         ...initialParams,
         { kind: 'changing' as const, name: 'CV_FLAG', type: 'I' },
         { kind: 'tables' as const, name: 'IT_LINES', type: 'TYPE STANDARD TABLE' },
-        { kind: 'raising' as const, name: 'CX_ROOT' },
+        { kind: 'raising' as const, name: 'CX_SY_CONVERSION_NO_NUMBER' },
       ];
       let updateResult: ToolResult;
       try {
@@ -225,7 +225,7 @@ describe('FUNC parameter lifecycle (issue #252)', () => {
       expect(reReadPayload.signature.exporting.map((p) => p.name)).toContain('EV_OUTPUT');
       expect(reReadPayload.signature.changing.map((p) => p.name)).toContain('CV_FLAG');
       expect(reReadPayload.signature.tables.map((p) => p.name)).toContain('IT_LINES');
-      expect(reReadPayload.signature.raising.map((p) => p.name)).toContain('CX_ROOT');
+      expect(reReadPayload.signature.raising.map((p) => p.name)).toContain('CX_SY_CONVERSION_NO_NUMBER');
     } finally {
       // Cleanup is handled by registry/cleanupAll in afterAll.
     }
