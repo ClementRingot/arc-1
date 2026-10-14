@@ -703,14 +703,14 @@ describe('AdtClient', () => {
       const client = createClient();
       await client.getRevisions('DDLS', 'Z_VIEW');
       const urls = mockFetch.mock.calls.map((c: any[]) => String(c[0]));
-      expect(urls.some((u) => u.includes('/ddic/ddl/sources/Z_VIEW/versions?'))).toBe(true);
+      expect(urls.some((u) => u.endsWith('/ddic/ddl/sources/Z_VIEW/versions'))).toBe(true);
     });
 
     it('uses the object-level revisions endpoint for DCLS', async () => {
       const client = createClient();
       await client.getRevisions('DCLS', 'Z_ACCESS');
       const urls = mockFetch.mock.calls.map((c: any[]) => String(c[0]));
-      expect(urls.some((u) => u.includes('/acm/dcl/sources/Z_ACCESS/versions?'))).toBe(true);
+      expect(urls.some((u) => u.endsWith('/acm/dcl/sources/Z_ACCESS/versions'))).toBe(true);
     });
 
     it('keeps the source/main revisions endpoint for SRVD and BDEF', async () => {

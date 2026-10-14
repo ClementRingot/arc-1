@@ -502,15 +502,15 @@ export class AdtHttpClient {
     if (this.config.sapConnectivityAuth && !this.config.ppProxyAuth) {
       headers['SAP-Connectivity-Authentication'] = this.config.sapConnectivityAuth;
     }
-
-    // SAP's quick-fix provider looks up the complete request URI, including its query (#993).
-    // Keep the proposal URI exact, selecting the same SAP context through headers instead.
-    const proposalRequest = method === 'POST' && path.startsWith('/sap/bc/adt/quickfixes/proposals/');
-    if (proposalRequest) {
+    // Quick-fix lookup includes queries (#993); old revision feeds append source paths to them. Use context headers.
+    const sapContextInHeaders =
+      (method === 'POST' && path.startsWith('/sap/bc/adt/quickfixes/proposals/')) ||
+      (method === 'GET' && /^\/sap\/bc\/adt\/[^?#]+\/versions$/.test(path));
+    if (sapContextInHeaders) {
       if (this.config.client) headers['sap-client'] = this.config.client;
       if (this.config.language) headers['sap-language'] = this.config.language;
     }
-    const url = this.buildUrl(path, proposalRequest);
+    const url = this.buildUrl(path, sapContextInHeaders);
     const httpStart = Date.now();
 
     // Per-request guards to prevent infinite retry loops

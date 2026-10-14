@@ -2095,6 +2095,30 @@ describe('AdtHttpClient', () => {
       });
     });
 
+    it('preserves revision-feed context and authentication through BTP Connectivity', async () => {
+      mockClientRequest.mockResolvedValueOnce(mockClientResponse(200, '<feed/>'));
+      const path = '/sap/bc/adt/programs/programs/ZREPORT/source/main/versions';
+      await new AdtHttpClient({
+        ...getDefaultConfig(),
+        disableSaml: true,
+        sapConnectivityAuth: 'Bearer user-token',
+        btpProxy: {
+          host: 'proxy.example.com',
+          port: 20003,
+          protocol: 'http',
+          getProxyToken: async () => 'proxy-token',
+        },
+      }).get(path);
+      expect(clientRequestPath()).toBe(`http://sap.example.com:8000${path}`);
+      expect(clientRequestHeaders()).toMatchObject({
+        'sap-client': '001',
+        'sap-language': 'EN',
+        'X-SAP-SAML2': 'disabled',
+        'SAP-Connectivity-Authentication': 'Bearer user-token',
+        'Proxy-Authorization': 'Bearer proxy-token',
+      });
+    });
+
     it('sends Proxy-Authorization and full URL via Client for standard HTTP proxy protocol', async () => {
       mockClientRequest.mockResolvedValueOnce(mockClientResponse(200, 'ok'));
 
