@@ -21,6 +21,14 @@ export function acceptFallback(
 
   const inferred = body.match(/application\/[\w.+-]+(?:\/[\w.+-]+)?/)?.[0];
   if (inferred && inferred !== accept) return inferred;
+  // SAP_BASIS 755 accepts v1 binding XML but rejects v2 without listing an accepted type (#991).
+  if (
+    method === 'GET' &&
+    /^\/sap\/bc\/adt\/businessservices\/bindings\/[^/]+$/.test(path) &&
+    accept === 'application/vnd.sap.adt.businessservices.servicebinding.v2+xml'
+  ) {
+    return 'application/vnd.sap.adt.businessservices.servicebinding.v1+xml';
+  }
   if (accept && accept !== '*/*' && accept !== 'application/xml') return 'application/xml';
   if (accept === 'application/xml') return '*/*';
   return undefined;

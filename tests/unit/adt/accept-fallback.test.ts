@@ -7,6 +7,23 @@ const exception = (id: string, number: string) =>
   `<exception><type id="ExceptionResourceNotAcceptable"/><properties><entry key="T100KEY-ID">${id}</entry><entry key="T100KEY-NO">${number}</entry></properties></exception>`;
 
 describe('406 Accept fallback', () => {
+  it('retries v1 only for a v2 binding metadata GET', () => {
+    const v2 = 'application/vnd.sap.adt.businessservices.servicebinding.v2+xml';
+    const uri = '/sap/bc/adt/businessservices/bindings/%2FNS%2FSERVICE';
+    expect(acceptFallback('Expected application/x+xml', v2, 'GET', uri)).toBe('application/x+xml');
+    expect(acceptFallback('Not acceptable', v2, 'GET', uri)).toBe(
+      'application/vnd.sap.adt.businessservices.servicebinding.v1+xml',
+    );
+    for (const [method, path] of [
+      ['PUT', uri],
+      ['POST', uri],
+      ['GET', `${uri}/source/main`],
+      ['GET', '/sap/bc/adt/businessservices/bindings'],
+    ]) {
+      expect(acceptFallback('Not acceptable', v2, method!, path!)).toBe('application/xml');
+    }
+  });
+
   it.each([
     ['SEDX_ADT', '110'],
     ['SEDX_ADT', '107'],
