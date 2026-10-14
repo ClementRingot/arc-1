@@ -61,7 +61,7 @@ Use `SAPRead` for exact implementation behavior, an exact reference, one method 
 | `expand_includes` | boolean | No | For FUGR: expand include source inline, up to 80 source blocks (including main) and five include levels. `grep` implies this expansion; see [Function-group source search](#function-group-source-search). |
 | `group` | string | No | For FUNC, and for VERSIONS or API_STATE with `objectType="FUNC"`: function group name; resolved through search when omitted, including namespaced functions and SAP_BASIS 750's decorated search names. |
 | `versionUri` | string | No | For VERSION_SOURCE: canonical source/revision URI from a VERSIONS response (`revisions[].uri`). Only known source endpoint shapes are accepted; unrelated ADT endpoints, absolute URLs, authority changes, dot segments, queries, fragments, controls, encoded backslashes, and ambiguous nested encodings are rejected. Encoded slashes remain valid inside namespaced ABAP object names. |
-| `maxRows` | number | No | For TABLE_CONTENTS/TABLE_QUERY: requested row cap (default 100, clamped to 10,000). Wide results can hit the server's cumulative byte ceiling at fewer rows. Known TABLE_CONTENTS limitation on 758: SAP can return `N+1`; prefer TABLE_QUERY when an exact cap matters. |
+| `maxRows` | number | No | For TABLE_CONTENTS/TABLE_QUERY: requested row cap (default 100, clamped to 10,000). Wide results can hit the server's cumulative byte ceiling at fewer rows. For TABLE_CONTENTS, SAP can return `N+1` (observed on 758 and BTP ABAP); prefer TABLE_QUERY when an exact cap matters. |
 | `maxResults` | number | No | For DEVC: maximum package objects to list (default 200, clamped to 1–1000). SAP may truncate larger packages at the requested limit. |
 | `sqlFilter` | string | No | Legacy TABLE_CONTENTS condition. Do not rely on it for portable automation: the 758 endpoint expects a different SELECT-shaped payload, so condition-only filters are unusable there. Prefer TABLE_QUERY `where`. |
 | `columns` | array | No | For TABLE_QUERY: fields to project; omit for all columns. Example: `["MANDT","MATNR"]`. |
@@ -235,7 +235,7 @@ SAPRead(type="API_STATE", name="CL_SALV_TABLE")              — check if class 
 SAPRead(type="API_STATE", name="IF_HTTP_CLIENT")              — check interface release state
 SAPRead(type="API_STATE", name="MARA", objectType="TABL")     — check table with explicit type
 SAPRead(type="API_STATE", name="Z_MY_FM", objectType="FUNC") — function module; group resolved via search, or pass group="ZFG"
-SAPRead(type="TABLE_CONTENTS", name="MARA", maxRows=10) — legacy unfiltered preview; 758 may return 11 rows
+SAPRead(type="TABLE_CONTENTS", name="MARA", maxRows=10) — legacy unfiltered preview; SAP may return 11 rows
 SAPRead(type="TABLE_QUERY", name="MARA", columns=["MANDT","MATNR"], where=[{field:"MANDT",op:"=",value:"001"}], maxRows=10)
 SAPRead(type="SYSTEM")
 SAPRead(type="INACTIVE_OBJECTS")                 — list objects pending activation

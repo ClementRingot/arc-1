@@ -841,12 +841,12 @@ describeIf('BTP ABAP Environment Integration Tests', () => {
 
   // ─── BTP-Specific: SDO (server-driven) object-create path ──────────────
   //
-  // Registered server-driven types other than UIAD create via minimal metadata
+  // Standalone server-driven types with metadata-only fixtures create via minimal metadata
   // built by buildServerDrivenMetadataXml, with no adtcore:responsible,
   // masterSystem, or abapLanguageVersion, so it needs no cloudify. Earlier BTP 919 probes reached
   // package-assignment (structure package → 409 "cannot contain development objects"; DTSC → 403
   // resource-auth). A wrong body would 400 at deserialization; registry membership is not live coverage.
-  describe('BTP object-create path for every registered SDO type except UIAD', () => {
+  describe('BTP standalone SDO types with metadata-only create fixtures', () => {
     const structurePkg = process.env.TEST_BTP_STRUCTURE_PACKAGE || 'ZLOCAL';
     const writablePkg = process.env.TEST_BTP_PACKAGE;
     // UIAD is excluded: SAP refuses LADI edits outside the ABAP Cloud language version
@@ -854,7 +854,9 @@ describeIf('BTP ABAP Environment Integration Tests', () => {
     // different failure class than the 403/409 package outcomes this test asserts.
     // Job objects need an existing class/catalog plus additionalCreationProperties, so they cannot
     // use this metadata-only create fixture. Their read coverage is in app-objects.integration.test.ts.
-    const codes = Object.keys(SDO_REGISTRY).filter((c) => !['UIAD', 'SAJC', 'SAJT'].includes(c));
+    // TABL/DTI needs a parent table and TABLE~INDEX name; see table-index.integration.test.ts
+    // and docs/research/2026-10-12-table-indexes.md for its dedicated lifecycle.
+    const codes = Object.keys(SDO_REGISTRY).filter((c) => !['UIAD', 'SAJC', 'SAJT', 'TABL/DTI'].includes(c));
 
     // Load ADT discovery so SDO availability is gated per type — these collections are 8.16+ and absent
     // on older tenants (where an unconditional POST would 404/405, not the package-assignment we assert).

@@ -43,6 +43,7 @@ refresh your MCP client's tool list after upgrading. Final release scope is pend
 | Local source files ([#981](https://github.com/arc-mcp/arc-1/pull/981)) | Codex can send local source through its existing ARC-1 connection without model transcription. | Use the [file workflow](codex-file-source.md). |
 | Larger HTTP writes ([#972](https://github.com/arc-mcp/arc-1/pull/972)) | `ARC1_MAX_HTTP_REQUEST_BYTES` permits an optional increase from 100 KiB, up to 16 MiB. | Check [admission and memory limits](configuration-reference.md#http-request-bodies) before increasing it. |
 | Documentation and tests ([#997](https://github.com/arc-mcp/arc-1/pull/997)) | Clarifies configuration and security guidance; strengthens live workflow checks and cleanup. | `none` |
+| BTP test fixtures ([#1001](https://github.com/arc-mcp/arc-1/pull/1001)) | Keeps parent-owned table indexes out of standalone create fixtures; documents the BTP preview row-limit caveat. | `none` |
 
 Known dependency risk: the SAP SDK chain still includes `node-forge` affected by
 [GHSA-86w9-cpqp-85rv](https://github.com/advisories/GHSA-86w9-cpqp-85rv). Recheck the advisory before deployment.
