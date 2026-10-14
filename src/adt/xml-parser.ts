@@ -123,14 +123,15 @@ const parserOptions = {
   },
 };
 const parser = new XMLParser(parserOptions);
-const dataPreviewParser = new XMLParser({ ...parserOptions, trimValues: false });
+const whitespacePreservingParser = new XMLParser({ ...parserOptions, trimValues: false });
 
 /**
  * Parse raw XML string to a JS object. Every attribute and text value is entity-DECODED
  * (`R&amp;D` → `R&D`): never decode a parsed value again, and `escapeXmlAttr` it on the way back.
+ * Set preserveWhitespace to retain leading/trailing text whitespace, e.g. in quick-fix deltas.
  */
-export function parseXml(xml: string): Record<string, unknown> {
-  return parser.parse(xml) as Record<string, unknown>;
+export function parseXml(xml: string, preserveWhitespace = false): Record<string, unknown> {
+  return (preserveWhitespace ? whitespacePreservingParser : parser).parse(xml) as Record<string, unknown>;
 }
 
 /**
@@ -324,13 +325,13 @@ function parseDataPreviewMetaObject(parsed: Record<string, unknown>): DataPrevie
 /** Parse data-preview rows and metrics from one shared fast-xml-parser object tree. */
 export function parseDataPreviewResult(xml: string): DataPreviewResult {
   if (!xml || xml.trim().length === 0) return { columns: [], rows: [] };
-  const parsed = dataPreviewParser.parse(xml) as Record<string, unknown>;
+  const parsed = whitespacePreservingParser.parse(xml) as Record<string, unknown>;
   return { ...parseTableContentsObject(parsed), ...parseDataPreviewMetaObject(parsed) };
 }
 
 export function parseTableContents(xml: string): { columns: string[]; rows: Record<string, string>[] } {
   if (!xml || xml.trim().length === 0) return { columns: [], rows: [] };
-  return parseTableContentsObject(dataPreviewParser.parse(xml) as Record<string, unknown>);
+  return parseTableContentsObject(whitespacePreservingParser.parse(xml) as Record<string, unknown>);
 }
 
 /**
@@ -340,7 +341,7 @@ export function parseTableContents(xml: string): { columns: string[]; rows: Reco
  */
 export function parseDataPreviewMeta(xml: string): DataPreviewMeta {
   if (!xml || xml.trim().length === 0) return {};
-  return parseDataPreviewMetaObject(dataPreviewParser.parse(xml) as Record<string, unknown>);
+  return parseDataPreviewMetaObject(whitespacePreservingParser.parse(xml) as Record<string, unknown>);
 }
 
 /**

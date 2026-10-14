@@ -206,10 +206,8 @@ export async function writeActionGenerateBehaviorImplementation(ctx: SapWriteCon
   // PR-C: high-level RAP one-shot — auto-discover BDEF via class metadata's
   // rootEntityRef, scaffold every required handler (creating lhc_<alias>
   // skeletons when missing), write under one lock, and (by default) activate.
-  // Reliable equivalent of Eclipse ADT's "Generate Behavior Implementation"
-  // Cmd+1 quickfix; avoids the broken /sap/bc/adt/quickfixes/proposals/
-  // create_class_implementation server endpoint (HTTP 500 on a4h, verified
-  // live during PR-C research). See docs/plans/completed/2026-05-10-add-generate-behavior-implementation.md.
+  // Deterministic scaffolding, independent of SAP quick-fix availability.
+  // See docs/plans/completed/2026-05-10-add-generate-behavior-implementation.md.
   if (type !== 'CLAS') {
     return errorResult('generate_behavior_implementation is only supported for type=CLAS behavior pool classes.');
   }

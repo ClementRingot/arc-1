@@ -11,10 +11,8 @@
  *   4. updateSource (per include URL)    — write CCDEF + CCIMP under one lock
  *   5. activateBatch                     — optional final activation
  *
- * This avoids the broken `/sap/bc/adt/quickfixes/proposals/.../create_class_implementation`
- * server endpoint (HTTP 500 on a4h regardless of payload — verified live during research).
- * Local generation is deterministic, fully unit-testable, and reuses the proven PR #257
- * include-write path.
+ * Local generation is deterministic, does not depend on SAP quick-fix availability,
+ * and reuses the tested PR #257 include-write path.
  *
  * Inputs:
  *   className — the behavior pool class (e.g. "ZBP_DM_PROJECT")

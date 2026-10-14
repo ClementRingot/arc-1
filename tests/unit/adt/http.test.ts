@@ -2069,6 +2069,32 @@ describe('AdtHttpClient', () => {
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
+    it('forwards quick-fix SAP context headers through BTP Connectivity without changing the proposal URI', async () => {
+      mockClientRequest
+        .mockResolvedValueOnce(mockClientResponse(200, '', { 'x-csrf-token': 'token' }))
+        .mockResolvedValueOnce(mockClientResponse(200, '<result/>'));
+      const client = new AdtHttpClient({
+        ...getDefaultConfig(),
+        sapConnectivityAuth: 'Bearer user-token',
+        btpProxy: {
+          host: 'proxy.example.com',
+          port: 20003,
+          protocol: 'http',
+          getProxyToken: async () => 'proxy-token',
+        },
+      });
+      const path = '/sap/bc/adt/quickfixes/proposals/providers/refactoring/quickfixes/declare_local_variable';
+      await client.post(path, '<request/>', 'application/xml');
+      expect(clientRequestPath(1)).toBe(`http://sap.example.com:8000${path}`);
+      expect(clientRequestHeaders(1)).toMatchObject({
+        'sap-client': '001',
+        'sap-language': 'EN',
+        'X-CSRF-Token': 'token',
+        'SAP-Connectivity-Authentication': 'Bearer user-token',
+        'Proxy-Authorization': 'Bearer proxy-token',
+      });
+    });
+
     it('sends Proxy-Authorization and full URL via Client for standard HTTP proxy protocol', async () => {
       mockClientRequest.mockResolvedValueOnce(mockClientResponse(200, 'ok'));
 

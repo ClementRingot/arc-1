@@ -447,6 +447,8 @@ evidence.
 extract have a larger blast radius than text edits and need a trustworthy preview, collision
 handling, activation strategy, and partial-failure story.
 
+Declaration quick-fix deltas work after [the #993 URI correction](https://github.com/arc-mcp/arc-1/blob/main/docs/research/2026-10-13-quickfix-exact-uri.md); the provider URI alone does not imply an unsupported flow. This does not qualify rename/extract.
+
 **Resume with.** Prove the relevant ADT refactoring contracts live and design preview-first output
 that never silently performs multi-object changes.
 

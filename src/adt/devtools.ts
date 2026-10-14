@@ -790,6 +790,27 @@ function assertQuickfixProposalUri(uri: string): void {
   }
 }
 
+async function assertQuickfixOwnerExists(http: AdtHttpClient, sourceUri: string): Promise<void> {
+  // SAP's OO scanner can dump for missing owners (#993). Check metadata, not the
+  // source: inactive objects and unsaved optional class includes are valid inputs.
+  const owner = /^(\/sap\/bc\/adt\/oo\/(?:classes|interfaces)\/[^/?#]+)\//.exec(sourceUri)?.[1];
+  if (owner) {
+    if (!canonicalHostRelativeAdtPath(sourceUri, '/sap/bc/adt/oo/', { allowRawEncodedSlash: true })) {
+      throw new AdtSafetyError('Quick-fix sourceUri must be a canonical host-relative ADT source path.');
+    }
+    try {
+      await http.get(owner);
+    } catch (err) {
+      if (err instanceof AdtApiError && err.isNotFound) {
+        err.extraHint =
+          'Quick-fix request was not sent: SAP could not find the class/interface metadata. ' +
+          'Check name and sourceUri, or create the object first. It does not need to be activated.';
+      }
+      throw err;
+    }
+  }
+}
+
 /** Get SAP quick fix proposals for a given source position */
 export async function getFixProposals(
   http: AdtHttpClient,
@@ -800,6 +821,7 @@ export async function getFixProposals(
   column: number,
 ): Promise<FixProposal[]> {
   checkOperation(safety, OperationType.Read, 'GetFixProposals');
+  await assertQuickfixOwnerExists(http, sourceUri);
 
   const uriWithStart = `${sourceUri}#start=${line},${column}`;
   const path = `/sap/bc/adt/quickfixes/evaluation?uri=${encodeURIComponent(uriWithStart)}`;
@@ -830,6 +852,7 @@ export async function applyFixProposal(
 ): Promise<FixDelta[]> {
   checkOperation(safety, OperationType.Update, 'ApplyFixProposal');
   assertQuickfixProposalUri(proposal.uri);
+  await assertQuickfixOwnerExists(http, sourceUri);
 
   const uriWithStart = `${sourceUri}#start=${line},${column}`;
   const userContent =
@@ -1146,7 +1169,7 @@ ${units.join('\n')}
 }
 
 function parseFixProposals(xml: string): FixProposal[] {
-  const parsed = parseXml(xml);
+  const parsed = parseXml(xml, true);
   const results = findDeepNodes(parsed, 'evaluationResult');
   if (results.length === 0) return [];
 
@@ -1234,9 +1257,10 @@ function parseFixDeltaNode(node: Record<string, unknown>): FixDelta {
 }
 
 function parseFixDeltas(xml: string): FixDelta[] {
-  const parsed = parseXml(xml);
+  const parsed = parseXml(xml, true);
   const unitNodes = findDeepNodes(parsed, 'deltas').flatMap((deltas) => nodeRecords(deltas.unit));
-  if (unitNodes.length > 0) return unitNodes.map(parseFixDeltaNode);
+  // ADT units carry replacement text only in <content>, never between child elements.
+  if (unitNodes.length > 0) return unitNodes.map((node) => parseFixDeltaNode({ ...node, content: node.content ?? '' }));
 
   const candidateKeys = ['delta', 'edit', 'textEdit', 'replacement', 'replace'] as const;
   let nodes: Array<Record<string, unknown>> = [];
