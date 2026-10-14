@@ -106,14 +106,19 @@ Keep these XSUAA concepts separate:
 | Role collection | Subaccount bundle that administrators assign |
 | Assignment | User/group grant that produces scopes in a new token |
 
-The MTA creates seven role collections with the CF space suffix, for example
-`ARC-1 Viewer (dev)`. After every new or upgraded XSUAA deployment:
+The MTA creates **eight role collections** with the CF space suffix: seven functional collections
+(for example `ARC-1 Viewer (dev)`) plus `ARC-1 All Targets (dev)`. Leave All Targets unassigned
+unless explicitly approved; it grants all current and future targets when filtering is enabled.
+After every new or upgraded XSUAA deployment:
 
 1. Open **BTP Cockpit → Security → Role Collections**.
 2. Confirm all expected `ARC-1 … (<space>)` collections exist.
 3. Open each collection and confirm its **Roles** tab contains roles for the current
    `arc1-mcp-<space>!t...` application identifier.
-4. Assign the least-privilege collection before the user's first MCP login.
+4. For single-target or standard multi-target access, assign the least-privilege collection before
+   the user's first MCP login. For target-filtered access, follow the
+   [target-role setup order](multi-target-authorization.md#minimal-static-role-setup): verify
+   enforcement and active destinations before assigning restricted users.
 5. Have the user sign in again and restart/reconnect the MCP client if its tool catalog is cached.
 
 An older or recreated XSUAA instance can leave same-name collections with empty/orphaned roles.
@@ -381,7 +386,9 @@ active targets or quarantined configuration. It does not prove Destination Servi
 SAP authorization, data/SQL policy, or a usable tool catalog.
 
 For multi-target acceptance, call `SAPTargets` as an Admin, review exclusions and registry revision,
-then perform the same safe read as a Viewer through each endpoint style. `SAPRead SYSTEM` alone
+then perform the same safe read through each endpoint style with a read-only pilot user: ordinary
+Viewer for standard access, or an exact-target collection for filtered access. A plain Viewer has
+no execution grants in filtered mode; test that denial separately. `SAPRead SYSTEM` alone
 does not prove which SAP user processed the request. Follow
 [Verify the backend identity](principal-propagation-setup.md#verify-the-backend-identity): expect
 the human SAP user for PP or the approved technical user for shared Basic, and correlate the live
@@ -395,9 +402,14 @@ Record evidence rather than only checking configuration screens.
 - [ ] The reviewed `.mtaext`, deployed ARC-1 version, route, CF org/space, and rollback MTAR are recorded.
 - [ ] The built MTAR was inspected and contains no `.env`, service key, private key, certificate, or local operator file.
 - [ ] XSUAA, Destination, and Connectivity bindings point to the intended subaccount and space.
-- [ ] All seven space-specific role collections exist and contain current roles.
+- [ ] All eight space-specific role collections exist and contain current roles; All Targets stays
+      unassigned unless approved.
 - [ ] Viewer, Data Viewer, Viewer + SQL, Admin, and no-role behavior match the expected tool surface.
-- [ ] Every test user obtains a fresh token after role changes; cached client catalogs were refreshed.
+      In filtered mode, pair capability tests with explicit target grants and separately test
+      no-grant readers, denied targets and Admin without execution grants.
+- [ ] After role changes, new application sign-in and catalog reload show the expected access;
+      refresh alone is not treated as revocation. Follow the
+      [role-change procedure](multi-target-administration.md#role-changes-and-revocation).
 - [ ] PP maps to the intended SAP human in each target; wrong/unmapped and SAP-unauthorized users fail conclusively and can retry after repair.
 - [ ] Cloud Connector exposes only the required paths and uses verified backend HTTPS.
 - [ ] Multi-target Admin `SAPTargets` shows no unexpected quarantine, duplicate, shadow, or policy narrowing.

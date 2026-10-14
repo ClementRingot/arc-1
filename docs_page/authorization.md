@@ -368,6 +368,40 @@ To grant SQL to one BTP user, assign a role collection that includes `MCPSqlUser
 
 See [XSUAA Setup](xsuaa-setup.md) for BTP Cockpit assignment steps.
 
+### Opt-in multi-target grants
+
+**Opt-in target authorization** adds a separate target boundary
+only when the deployment owner selects `ARC1_MULTI_TARGET_AUTHORIZATION=xsuaa-attribute`.
+Unset/`standard` means **standard access**, a supported choice where all readers may see/try the
+configured inventory and SAP still checks their access. Filtering is optional, particularly useful
+for larger landscapes with different team assignments. It follows IAM grants, not automatic
+discovery of which SAP accounts exist. The
+[canonical setup and readiness](multi-target-authorization.md)
+cover availability, activation and acceptance; check them before assigning restricted users.
+
+The additive `MCPTargetReadAccess` role template supplies `read` plus required `arc1_targets`
+values with **no default grant**. One static cohort can contain multiple exact public IDs, such as
+`A4H/001` and `A4H/100`; no IAS change is required. The separate `MCPAllTargetReadAccess` template
+supplies `read` and literal `*` through the unassigned `ARC-1 All Targets (<space>)` collection.
+That intentionally includes future targets. Existing functional templates/collections are unchanged.
+
+```text
+eligible operation = global functional scopes × union of granted targets
+                   ∩ instance ceiling ∩ selected destination policy ∩ SAP authorization
+```
+
+XSUAA does not preserve a capability/target pair from each role. SQL capability with target A,
+combined with another role granting B, makes SQL eligible on both A and B where downstream policies
+permit it. The same is true for data and Admin. Use separate applications with distinct XSUAA
+identities if one user needs SQL on A but only source reads on B; disabling B's destination SQL
+switch restricts everyone, not just that user.
+
+Admin grants full safe catalog diagnostics, **not execution on an ungranted target**. Choose exact
+operator grants or deliberately add All Targets. Missing/malformed grants never disable enforcement;
+partial wildcards and XSUAA Unrestricted are unsupported. Only supported verified XSUAA user tokens
+enter enforced routes; a machine token, API key or generic OIDC token is not an alternative.
+Target grants do not create SAP users, prove PP access, or enable multi-target writes.
+
 ---
 
 ## API-key profiles (non-BTP)
@@ -582,6 +616,8 @@ collection's roles and the signed-in IdP origin below. `invalid_scope` can also 
 malformed requested scope; use the [XSUAA diagnosis table](xsuaa-setup.md#insufficient-scope-invalid_scope)
 before changing roles or browser state.
 
+<a id="role-assigned-but-login-still-fails"></a>
+
 ### "I changed the user's role but the new scopes don't appear"
 
 Changing role collections does not rewrite already issued JWTs. Their claims remain unchanged
@@ -591,13 +627,14 @@ and token lifetime rather than assuming a reconnect refreshes either.
 After a verified role change:
 
 1. Verify the required role collection contains current application roles and is assigned under the IdP used for login. An unknown scope name needs configuration repair, not another role.
-2. On ARC-1's failure page, select **Role assigned? Refresh access**. ARC-1 sends the browser through XSUAA's logout endpoint with its bound client ID and a fixed, allowlisted return URL.
-3. After **Access refreshed** appears, use the MCP client's re-authentication flow and refresh its tool catalog. Reconnecting alone may reuse a token. A new identity-provider login may be required.
-4. If the deployment predates this recovery action, retry in a private browser window or clear the XSUAA-domain cookies manually. See [XSUAA Setup → invalid_scope](xsuaa-setup.md#insufficient-scope-invalid_scope).
+2. If the eligible `invalid_scope` failure page offers **Role assigned? Refresh access**, select it. ARC-1 sends the browser through XSUAA logout with its bound client ID and a fixed, allowlisted return URL.
+3. After **Access refreshed**, use the MCP client's sign-out/new-sign-in flow and reload its catalog. Reconnect or token refresh alone can retain old grants; a new identity-provider login may be required.
+4. If there is no action (including successful login with stale grants), use a fresh private browser window or the owner-provided application logout link. Follow [XSUAA session recovery](xsuaa-setup.md#refresh-access-after-a-verified-assignment), not an invented logout endpoint or blanket cookie deletion.
 
-A fresh token should reflect the current grant. If claim inspection is needed, inspect it locally;
-do not paste bearer tokens into websites, tickets or chat. Decoding claims alone does not validate
-the token or prove SAP access.
+Verify the resulting grant and actual allowed/denied calls; a new token expiry does not prove the
+permissions changed. For target filtering, follow the [revocation procedure](multi-target-administration.md#role-changes-and-revocation).
+Inspect claims only locally; do not paste bearer tokens into websites, tickets or chat. Decoding
+claims alone does not validate the token or prove SAP access.
 
 The recovery action does not revoke access tokens already issued to other sessions. Do not construct a logout URL from request parameters or use an arbitrary redirect: XSUAA application logout requires an allowlisted redirect to prevent open redirects.
 

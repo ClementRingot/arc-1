@@ -51,6 +51,9 @@ Deploy ARC-1 as a Cloud Foundry app on SAP BTP with full platform integration:
   destinations marked `arc1.enabled=true` and exposes pinned SID/client plus aggregate endpoints
   ([setup](docs_page/multi-target-setup.md),
   [administration](docs_page/multi-target-administration.md))
+- **Optional target filtering** — for shared multi-system gateways where teams need different target
+  lists. [Assign systems/clients through XSUAA roles](docs_page/multi-target-authorization.md);
+  IAS changes are optional. This filters IAM-assigned targets, not automatically discovered SAP accounts.
 - **Cloud Connector** — reach on-premise systems through the connectivity proxy
 - **Per-user destinations** — user identity forwarded end-to-end via X.509 certificates for on-premise SAP, or exchanged for an ABAP bearer token for BTP ABAP Environment
 - **XSUAA OAuth proxy** — MCP clients authenticate via standard OAuth, ARC-1 handles the BTP token exchange

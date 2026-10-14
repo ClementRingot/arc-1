@@ -34,7 +34,9 @@ MCP-native clients use RFC 8414 OAuth discovery to find authorization endpoints 
 `SAP_XSUAA_AUTH`. Do not create a second service or bind it again. Check `cf target`, then
 `cf services` and `cf app <app-name>` in the intended space. Record the bound XSUAA instance and
 its application identifier; inspect credentials locally only when needed and never paste them
-into chat or a ticket. Continue to [Step 3](#step-3-assign-role-collections).
+into chat or a ticket. For ordinary functional roles, continue to [Step 3](#step-3-assign-role-collections).
+For per-target restrictions, return to the [target-access procedure](multi-target-authorization.md)
+after this check; it requires verified enforcement before restricted-user assignment.
 
 The MTA registers ARC-1's `/oauth/callback` and `/oauth/logged-out` on its deployed route
 automatically. The optional UI extension also registers the AppRouter's `/login/callback`.
@@ -100,7 +102,11 @@ The included `xs-security.json` defines 7 scopes:
 | `git`          | Authorize gated abapGit mutation/egress actions; gCTS mutations remain quarantined | `SAPGit.external_info`/`clone`/`pull`/`push`/branch/unlink actions after server gates          |
 | `admin`        | Implies ALL other scopes at runtime                            | Everything                                                                                   |
 
-The MTA additionally defines 7 role collections (assignable in BTP Cockpit). The manual
+The MTA defines the seven existing functional role collections below (assignable in BTP Cockpit).
+With target authorization support, the MTA defines **eight collections in total**, adding a
+separate, unassigned All Targets collection. It grants `read` and literal `*`, including future
+targets; leave it unassigned unless explicitly approved. It does not change the seven functional
+assignments or enable enforcement automatically. The manual
 `create-service` command above reads only `xs-security.landscape.json`; it does not apply the collections in
 `mta.yaml`. A manual owner must create the required collections and add the current application
 roles before assigning users.
@@ -132,14 +138,27 @@ roles before assigning users.
 > `cf update-service arc1-xsuaa -c xs-security.landscape.json` updates the scopes and role
 > templates only. It does **not** create role collections declared in
 > `mta.yaml`. Agree on lifecycle ownership before adopting the MTA, then
-> verify in **Security → Role Collections** that all seven collections exist and
-> contain the expected roles. This matters especially for older deployments:
+> verify in **Security → Role Collections** that all seven functional collections exist and
+> contain the expected roles. Also verify the eighth All Targets collection
+> and leave it unassigned by default. This matters especially for older deployments:
 > seeing `MCPViewer`, `MCPDataViewer`, or `MCPSqlUser` under **Roles** does not
 > mean the corresponding assignable role collections already exist.
 
 **Want a restricted developer** (can write code but cannot transport or push to Git)? Define your own role template in `xs-security.json` with just `[read, write]` scopes, redeploy, and assign it — or use `SAP_DENY_ACTIONS` on the server.
 
 Role collections are only the user-permission gate. Server flags still have to allow the capability: for example, a user in `ARC-1 Developer` still cannot create transports unless the ARC-1 instance also has `SAP_ALLOW_WRITES=true` and `SAP_ALLOW_TRANSPORT_WRITES=true`.
+
+For optional per-user target filtering—most useful when a shared gateway serves different teams—follow the
+[static-cohort setup](multi-target-authorization.md), not a second XSUAA
+service-creation sequence. That guide covers version availability, setup checks and the
+`MCPTargetReadAccess` template (required `arc1_targets`, no default role) and
+`MCPAllTargetReadAccess` (explicit `*` default). A manually managed service still needs an owner to
+create the corresponding collection; MTA owns its additional `ARC-1 All Targets (<space>)` collection.
+Do not put the all-target role into an already assigned functional collection during an update.
+For target attributes, keep the existing OAuth scope request set; see the distinction below.
+IAS-fed target values remain optional and require their own live token/union/refresh validation.
+Static target roles need no IAS change. Keeping standard access (`standard`) is supported when all
+readers may see/try every target; neither mode automatically discovers the user's SAP accounts.
 
 !!! note "Assign the least-privilege collection"
     `ARC-1 Developer` bundles `transports` + `git` — assigning it authorizes CTS mutations and the
@@ -149,6 +168,14 @@ Role collections are only the user-permission gate. Server flags still have to a
     only); to grant code-write *without* transports/Git, use the `[read, write]`-only template above.
 
 See [authorization.md](authorization.md) for the full three-layer authorization model.
+
+### Target attributes and OAuth scopes
+
+`arc1_targets` is an XSUAA role attribute, not an OAuth scope. The unqualified `user_attributes`
+does exist as a separate [Cloud Foundry UAA scope](https://docs.cloudfoundry.org/api/uaa/version/78.11.0/),
+but ARC-1 does not require it to obtain these XSUAA role attributes. Do not add either name to
+ARC-1's requested scopes or invent `$XSAPPNAME.user_attributes`; that application-qualified scope
+is not declared by ARC-1. Keep the multi-target endpoints' advertised mutation-free scope set unchanged.
 
 <a id="step-2-bind-service-and-configure"></a>
 
@@ -179,6 +206,10 @@ cf logs arc1-mcp-server --recent | grep XSUAA
 ```
 
 ## Step 3: Assign Role Collections
+
+For filtered multi-target access, follow the [target-role procedure](multi-target-authorization.md#minimal-static-role-setup)
+instead: verify enforcement before assigning restricted users; Viewer alone has no target grants.
+The Viewer example below is for single-target or standard multi-target access.
 
 1. Open **BTP Cockpit** → **Security** → **Role Collections**
 2. Find the shipped collection for your space — the names carry the space suffix, e.g. "ARC-1 Viewer (<space>)", "ARC-1 Developer (<space>)", … "ARC-1 Admin (<space>)" (see the multi-space note above)
@@ -731,8 +762,8 @@ changing roles or clearing state. Do not share full callback URLs, tokens or bin
 | User is not allowed any requested scopes | IAM owner: check the required collection is assigned to the correct application identity and contains roles for the bound application identifier. An assignment alone does not prove those roles exist. |
 | Collection exists but has no roles or references an old application identifier | IAM and deployment owners: inspect current role templates and collection contents; use the owner-safe repair below. |
 | Email is assigned but login uses another IdP origin | IAM owner: use the [IdP-origin check and `--of-idp` example](authorization.md#i-have-two-marianexamplecom-users-in-btp-and-only-one-shows-the-role-i-changed) to match the application login identity. Platform CLI/cockpit access does not establish application access. |
-| Correct current roles/origin are verified, but the browser session predates the change | User: try the application refresh action below, then start sign-in again from the MCP client. |
-| Sign-in succeeds but old permissions/tools remain | User: obtain a fresh token through the client's re-authentication flow, then refresh/reload its tool catalog. Reconnecting alone may reuse a cached token. |
+| Correct current roles/origin are verified, but the browser session predates the change | User: if the failure page offers **Refresh access**, use it and start MCP sign-in again; otherwise follow the recovery procedure below. |
+| Sign-in succeeds but old permissions/tools remain | User: use sign-out/new sign-in and the recovery procedure below, then verify the resulting access and reload tools. Reconnect or token refresh can retain old grants. |
 
 A fast callback or an absent login form is **not proof** of stale permissions: SSO can also return
 a current grant failure without an interactive form. Preserve a sanitized error code and request
@@ -741,9 +772,10 @@ correlation for the owner instead of drawing conclusions from timing.
 #### Refresh access after a verified assignment
 
 After an administrator assigns a role collection, the browser can still hold an older XSUAA SSO
-session. The failed ARC-1 sign-in page includes **Role assigned? Refresh access**. Use it after
-checking the assignment, wait for **Access refreshed**, then return to the MCP client and retry
-sign-in. A new identity-provider login may be required. This cannot repair an unknown scope name.
+session. On an eligible `invalid_scope` failure page for a loopback MCP callback, ARC-1 includes
+**Role assigned? Refresh access**. Use it after checking the assignment, wait for **Access refreshed**,
+then return to the MCP client and retry sign-in. Hosted callbacks or a successful login with stale
+target grants may show no action. A new IdP login may be required; this cannot repair an unknown scope name.
 
 The action calls XSUAA's documented `/logout.do` endpoint with ARC-1's bound `client_id` and a
 fixed, allowlisted ARC-1 return URL. Callback query parameters never select the logout host or
@@ -752,12 +784,18 @@ include that public URL as shown in [Custom public URL](#custom-public-url).
 
 The action ends the XSUAA browser SSO session; it does not revoke already issued access tokens or
 necessarily sign out the upstream IdP. Use the MCP client's re-authentication flow if it retains an
-old token, then refresh its tool catalog. On older ARC-1 versions without the action, a fresh private
-browser session is a useful comparison. Only if necessary, clear site data for the verified XSUAA
+old token, then refresh its tool catalog. When no action is available, use a fresh private browser
+session as a comparison or ask the deployment owner for the logout link built from the bound
+XSUAA origin/client ID and exact allowlisted ARC-1 `/oauth/logged-out` return URL. That return page
+alone is not a logout endpoint. Only if necessary, clear site data for the verified XSUAA
 domain—not all browser cookies. Read that domain from the intended binding locally, without
 copying its credentials into a support request.
 
 Do not use a bare `<xsuaa-url>/logout` or `/logout.do` URL. XSUAA requires the application client and an allowlisted return URL for a reliable application logout.
+
+Verify the resulting permissions; a newly issued token can still carry stale grants. For filtered
+target access, use the [role-change and revocation checks](multi-target-administration.md#role-changes-and-revocation),
+including the shipped access/refresh lifetimes and the customer's incident procedure.
 
 #### Repair missing or stale collection roles with the owner
 
