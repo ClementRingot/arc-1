@@ -27,6 +27,7 @@ import { readEnhancementImplementation } from './enhancements.js';
 import { AdtApiError, AdtError, AdtSafetyError, isNotFoundError } from './errors.js';
 import { AdtHttpClient, type AdtHttpConfig, type AdtResponse } from './http.js';
 import type { AdtRequestOptions } from './http-deadline.js';
+import { requirePackageFilteredSearch } from './package-contents.js';
 import { AdtPackageHierarchyResolver, type PackageHierarchyResolver } from './package-hierarchy.js';
 import { canonicalRevisionSourcePath } from './path-safety.js';
 import { clampUrlLimit } from './result-limits.js';
@@ -1228,6 +1229,7 @@ export class AdtClient {
     maxResults = 200,
   ): Promise<Array<{ type: string; name: string; description: string; uri: string }>> {
     checkOperation(this.safety, OperationType.Read, 'GetPackage');
+    await requirePackageFilteredSearch(this.http);
     const limit = clampUrlLimit(maxResults, 200);
     const resp = await this.http.get(
       `/sap/bc/adt/repository/informationsystem/search?operation=quickSearch&query=*&packageName=${encodeURIComponent(packageName)}&maxResults=${limit}`,

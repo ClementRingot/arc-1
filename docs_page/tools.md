@@ -162,6 +162,8 @@ This checks source declarations; it does not enumerate subclasses or prove runti
 
 **Package listings (DEVC):**
 
+Requires SAP to advertise the `packageName` quick-search filter; otherwise ARC-1 refuses the listing because older search providers can return unrelated objects.
+
 `SAPRead(type="DEVC", name="ZPKG")` keeps the JSON array in the first text block
 and adds a second JSON text block with `listing` metadata. Use
 `format="structured"` for one JSON object, `{objects: [...], listing: {...}}`.

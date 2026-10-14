@@ -61,6 +61,7 @@ Tests typically suffix these with a specific clause explaining *which* fixture o
 | `BACKEND_UNSUPPORTED: API release collection absent` | `api-release.integration.test.ts` | NW 7.50 | Systems advertising `/apireleases` |
 | `/ddic/tables collection not available on this release` | E2E fixture sync | NW 7.50/7.51 without the table collection | Systems advertising `/ddic/tables` |
 | `BACKEND_UNSUPPORTED: ADT domains collection absent` | `llm-arg-normalization.integration.test.ts` DOMA lifecycle | Systems without the domain collection | Systems advertising `/ddic/domains` |
+| `ADT quicksearch does not advertise packageName` | `package-contents.integration.test.ts` package-filtered cases | NW 7.50 | Systems advertising the `packageName` quicksearch filter (verified on 758/816) |
 | `BACKEND_UNSUPPORTED: /ddic/domains endpoint not available on this release` | `crud.lifecycle.integration.test.ts` DOMA CRUD variants (2 tests) | NW 7.50–7.51 | SAP_BASIS ≥ 7.52 |
 | `NW 7.5x ADT_TM gap: reassign requires URL-query params on that release; needs release-aware fallback` | `transport.integration.test.ts` reassignTransport (1 test) | NW 7.50–7.51 | S/4HANA any release |
 | `NW 7.5x ADT_TM gap: release endpoint rejects /newreleasejobs path segment; no client-side workaround` | `transport-release.slow.integration.test.ts` releaseTransportRecursive (1 test) | NW 7.50–7.51 | S/4HANA any release |

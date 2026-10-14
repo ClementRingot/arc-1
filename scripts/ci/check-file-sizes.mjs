@@ -76,7 +76,8 @@ const BUDGETS = {
   // The single live ADT integration suite covers every read/write surface against a real system;
   // it passed the 3000-line default test budget with the ATC check-variant binding cases
   // (docs/research/2026-08-19-atc-default-check-variant.md). Split by domain before raising again.
-  'tests/integration/adt.integration.test.ts': 3050, // API-release lifecycle moved to a focused live suite.
+  'tests/integration/adt.integration.test.ts': 2944, // API-release and package-content lifecycles moved to focused live suites.
+  'tests/unit/adt/client.test.ts': 2874,
   // Typed attempt accounting, scoped response ownership, and stateful-context teardown must stay at
   // the transport choke point. Relation parsing/traversal and feature algorithms live elsewhere.
   'src/adt/http.ts': 1543, // #993: proposal POSTs keep their URI and send SAP context in headers (+7).
