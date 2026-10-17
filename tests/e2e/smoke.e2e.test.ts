@@ -133,7 +133,20 @@ describe('E2E Smoke Tests', () => {
 
   it('SAPRead DOMA — reads BUKRS domain metadata', async (ctx) => {
     const result = await callTool(client, 'SAPRead', { type: 'DOMA', name: 'BUKRS' });
-    const text = expectToolSuccessOrSkip(ctx, result);
+    // Domains exist in DDIC on 750, but their ADT metadata endpoint starts at 752.
+    // Never classify an arbitrary object's 404 as a missing collection.
+    if (result.isError && /status 404 at \/sap\/bc\/adt\/ddic\/domains\/BUKRS:/.test(result.content[0]?.text ?? '')) {
+      const components = JSON.parse(expectToolSuccess(await callTool(client, 'SAPRead', { type: 'COMPONENTS' })));
+      const release = components.find((c: { name: string }) => c.name === 'SAP_BASIS')?.release;
+      expect(release).toMatch(/^\d{3}$/);
+      if (Number(release) < 752) {
+        return skipTest(
+          ctx,
+          'Backend feature not supported on this SAP system: DOMA metadata requires SAP_BASIS >= 752',
+        );
+      }
+    }
+    const text = expectToolSuccess(result);
     const domain = JSON.parse(text);
     expect(domain.name).toBe('BUKRS');
     expect(domain.dataType).toBe('CHAR');

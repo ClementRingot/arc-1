@@ -15,7 +15,7 @@ import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FixDelta, FixProposal } from '../../src/adt/types.js';
 import { requireOrSkip, SkipReason, skipTest } from '../helpers/skip-policy.js';
-import { callTool, connectClient, expectToolError, expectToolSuccess } from './helpers.js';
+import { callTool, connectClient, expectToolError, expectToolSuccess, expectToolSuccessOrSkip } from './helpers.js';
 
 function stripCachedMarker(text: string): string {
   return text.replace(/^\[cached(?::revalidated)?\]\n/, '');
@@ -234,7 +234,7 @@ describe('E2E Diagnostics Tests', () => {
         );
       }
 
-      const payload = JSON.parse(expectToolSuccess(result));
+      const payload = JSON.parse(expectToolSuccessOrSkip(ctx, result));
       expect(payload.trace).toContain('STUSERTRACE');
       expect(payload.filters).toEqual({ user: null, authObject: null, onlyFailures: false });
       expect(payload.traceState).toMatchObject({
@@ -267,7 +267,7 @@ describe('E2E Diagnostics Tests', () => {
         );
       }
 
-      const payload = JSON.parse(expectToolSuccess(result));
+      const payload = JSON.parse(expectToolSuccessOrSkip(ctx, result));
       expect(payload.filters.onlyFailures).toBe(true);
       expect(payload.count).toBe(payload.entries.length);
       for (const entry of payload.entries) {

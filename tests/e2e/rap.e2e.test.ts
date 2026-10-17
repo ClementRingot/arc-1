@@ -222,18 +222,15 @@ describe('E2E RAP Completeness Tests', () => {
   // ── Write + Activate Lifecycle ────────────────────────────────────
 
   describe('SAPWrite + SAPActivate lifecycle', () => {
-    const WRITE_NAME = 'ZARC1_E2E_WRITE';
-
     it('creates a program, updates source, activates, reads back, deletes', async (ctx) => {
-      // Pre-cleanup: delete stale object from a previous run that failed mid-lifecycle
-      await bestEffortDelete(client, 'PROG', WRITE_NAME);
+      const name = uniqueName('ZARC1_E2E_WRITE');
 
       // Step 1: Create the transient program
       const createResult = await callTool(client, 'SAPWrite', {
         action: 'create',
         type: 'PROG',
-        name: WRITE_NAME,
-        source: "REPORT zarc1_e2e_write.\nWRITE: / 'original'.",
+        name,
+        source: `REPORT ${name}.\nWRITE: / 'original'.`,
         package: '$TMP',
       });
       expectToolSuccessOrSkip(ctx, createResult);
@@ -242,17 +239,16 @@ describe('E2E RAP Completeness Tests', () => {
         // Step 2: Activate the created program
         const activateResult = await callTool(client, 'SAPActivate', {
           type: 'PROG',
-          name: WRITE_NAME,
+          name,
         });
-        const activateText = activateResult.content[0]?.text ?? '';
-        expect(activateText).toContain(WRITE_NAME);
+        expect(expectToolSuccess(activateResult)).toContain(name);
 
         // Step 3: Update the source
-        const updatedSource = "REPORT zarc1_e2e_write.\nWRITE: / 'updated by E2E test'.";
+        const updatedSource = `REPORT ${name}.\nWRITE: / 'updated by E2E test'.`;
         const updateResult = await callTool(client, 'SAPWrite', {
           action: 'update',
           type: 'PROG',
-          name: WRITE_NAME,
+          name,
           source: updatedSource,
         });
         expectToolSuccessOrSkip(ctx, updateResult);
@@ -260,20 +256,20 @@ describe('E2E RAP Completeness Tests', () => {
         // Step 4: Activate the updated program
         const reactivateResult = await callTool(client, 'SAPActivate', {
           type: 'PROG',
-          name: WRITE_NAME,
+          name,
         });
-        expect(reactivateResult.content[0]?.text).toContain(WRITE_NAME);
+        expect(expectToolSuccess(reactivateResult)).toContain(name);
 
         // Step 5: Read back and verify the update took effect
         const readResult = await callTool(client, 'SAPRead', {
           type: 'PROG',
-          name: WRITE_NAME,
+          name,
         });
         const readText = expectToolSuccess(readResult);
         expect(readText).toContain('updated by E2E test');
       } finally {
         // Always clean up — delete the transient object even if test fails
-        await bestEffortDelete(client, 'PROG', WRITE_NAME);
+        await bestEffortDelete(client, 'PROG', name);
       }
     });
   });

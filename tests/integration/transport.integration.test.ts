@@ -341,8 +341,21 @@ describe('Transport Integration Tests', () => {
   // ─── listTransportLayers (discovery) ───────────────────────────
 
   describe('listTransportLayers', () => {
-    it('lists the transport layers available on the system', async () => {
-      const layers = await listTransportLayers(client.http, client.safety);
+    it('lists the transport layers available on the system', async (ctx) => {
+      let layers: Awaited<ReturnType<typeof listTransportLayers>>;
+      try {
+        layers = await listTransportLayers(client.http, client.safety);
+      } catch (error) {
+        if (
+          error instanceof AdtApiError &&
+          error.statusCode === 404 &&
+          error.path === '/sap/bc/adt/packages/valuehelps/transportlayers'
+        ) {
+          requireOrSkip(ctx, undefined, `${SkipReason.BACKEND_UNSUPPORTED}: transport-layer value help`);
+          return;
+        }
+        throw error;
+      }
       expect(Array.isArray(layers)).toBe(true);
       // Shape contract: every entry has string name + description; target optional.
       for (const layer of layers) {

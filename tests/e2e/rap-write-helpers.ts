@@ -1,6 +1,7 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { expect } from 'vitest';
 import { deleteProgramFixture } from '../helpers/program-cleanup.js';
-import { callTool } from './helpers.js';
+import { callTool, expectToolSuccess } from './helpers.js';
 
 /**
  * Generate a collision-safe unique name with a given prefix (max 30 chars).
@@ -38,13 +39,14 @@ export async function bestEffortDeletePackage(client: Client, name: string): Pro
 }
 
 export async function loadRapAvailability(client: Client): Promise<true | undefined> {
-  const featuresResult = await callTool(client, 'SAPManage', { action: 'features' });
-  if (featuresResult.isError) return undefined;
-
-  try {
-    const features = JSON.parse(featuresResult.content?.[0]?.text ?? '{}');
-    return features.rap?.available === true ? true : undefined;
-  } catch {
-    return undefined;
+  // A fresh server may not have probed yet; an empty feature cache is not evidence of absence.
+  const result = await callTool(client, 'SAPManage', { action: 'probe' });
+  const features = JSON.parse(expectToolSuccess(result));
+  expect(typeof features.rap?.available).toBe('boolean');
+  if (!features.rap.available && features.rap.mode !== 'off') {
+    expect(features.rap.message, 'RAP probe failure must not become a capability skip').toContain(
+      'endpoint not found (404)',
+    );
   }
+  return features.rap.available ? true : undefined;
 }

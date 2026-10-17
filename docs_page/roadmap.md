@@ -1,6 +1,6 @@
 # ARC-1 Idea Roadmap
 
-**Last reviewed:** 2026-10-14
+**Last reviewed:** 2026-10-17
 
 This page is ARC-1's idea parking lot. It records worthwhile work that is **not implemented now** so
 it does not disappear, but it is not a delivery schedule and it does not answer "what should we do
@@ -74,6 +74,7 @@ sequence.
 | [COMPAT-07](#compat-07) | CDS view-entity replacement lineage | P2 | S | Needs research | Compatibility |
 | [COMPAT-16](#compat-16) | API-release directory cleanup | P2 | S | Needs research | Compatibility |
 | [COMPAT-17](#compat-17) | Package contents without filtered search | P2 | M | Needs research | Compatibility |
+| [COMPAT-18](#compat-18) | Newly created program metadata on 7.50 | P2 | S | Needs research | Compatibility |
 | [COMPAT-10](#compat-10) | CDS set-operation lineage | P2 | M | Needs research | Compatibility |
 | [COMPAT-12](#compat-12) | Deletion with another user's text draft | P3 | S | Needs research | Compatibility |
 | [COMPAT-15](#compat-15) | Empty inactive text-pool recovery | P2 | M | Needs research | Compatibility |
@@ -340,6 +341,25 @@ result cap and reliable descriptions; indexed search also includes descendant pa
 **Resume with.** A bounded native listing contract with explicit scope, missing-versus-empty
 behavior and accurate completeness metadata. Preserve the current search path's descriptions;
 do not silently substitute an unbounded tree traversal or system-wide search.
+
+<a id="compat-18"></a>
+### COMPAT-18 — Newly created program metadata on 7.50
+
+- **Priority / effort / status:** P2 / S / Needs research
+- **Category:** Compatibility
+
+**Evidence.** On 750 with ARC-1 1.6.0, attempt to delete an absent disposable PROG, then
+create it with source. Creation succeeds, but activation/update/delete can receive a 404
+from the default metadata URL while `?version=inactive` returns its metadata and package.
+A fresh client and `Cache-Control: no-cache` did not resolve this. Native activation after
+verifying the inactive object's package allowed cleanup. The no-pre-delete control activated.
+The pre-delete case's forced read returned the creation template; persistence of the supplied
+inactive source was not checked. The control's delete hit a text-pool LOCK 404 until a later
+source update and activation, so only its activation succeeded without recovery.
+
+**Resume with.** Verify source persistence and default/active/inactive metadata across releases;
+trace the SAP response before changing package resolution. Preserve fail-closed package checks. Unique E2E
+fixtures avoid the pre-delete, but do not fix this runtime gap; do not add a skip for it.
 
 <a id="sec-14"></a>
 ### SEC-14 — DNS rebinding and Host-header hardening

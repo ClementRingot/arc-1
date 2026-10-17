@@ -69,15 +69,24 @@ Tests typically suffix these with a specific clause explaining *which* fixture o
 
 Transport creation uses `POST /sap/bc/adt/cts/transports`, verified on NW 7.50 SP02 and S/4HANA. Reassignment sends the owner in both the `targetuser` query parameter (read by 7.50) and the XML body (read by newer CTS handlers); it no longer skips on 7.50. Recursive release remains unsupported there: `POST /transportrequests/{id}/newreleasejobs` returns *"user action newreleasejobs is not supported"*, with no verified client-side workaround.
 
-### Root cause: `/datapreview/ddic` 404 "No suitable resource found"
+### `/datapreview/ddic` and `/datapreview/freestyle` routing failures
 
-We've seen this on minimally-configured systems where the endpoint IS registered in the discovery doc with full template links, but every verb (GET, POST with SQL body, POST with empty body, the `/metadata` sub-resource, the `/freestyle` alternate) returns `HTTP 404 "No suitable resource found"`. Same class of issue can surface on any SAP release — it just means the ADT framework can't route the URI to any handler.
+The 7.50 test system returns HTTP 404 "No suitable resource found" for these collections even though discovery advertises data preview. Native checks found the freestyle handler and its resource registration; the effective routing failure remains unresolved. Do not infer that SQL is unsupported on every 7.50 system or that activating an ICF node will fix this instance. SAP KBA 3128830 is troubleshooting guidance, not a confirmed diagnosis.
 
-Two possible root causes:
-1. The ICF service node is activated but its handler class isn't bound (check the **Handler List** tab in `tcode SICF`).
-2. The service is active with a handler class, but the ADT framework's internal resource registration is missing (typically after incomplete upgrades or on trial/dev-edition SAP installations).
+Only a verified collection refusal is a backend skip. Authentication errors and unexpected request failures must remain failures.
 
-Not fixable from ARC-1 client code. The error classifier (`classifySapDomainError`) surfaces a detailed hint when this comes back (category: `icf-handler-not-bound`), pointing at `tcode SICF` → Handler List + SAP KBA 3128830 ("Troubleshooting ICF 404 Errors").
+### Fixture prerequisites across releases
+
+- `SABP_UNIT` children and T000's ADT source format vary by release; reads assert the shared contract.
+- Predefined DTEL creation runs independently of DOMA creation. Unsupported domain/table/package writes use ARC-1's explicit discovery refusal.
+- Fixtures using `DEFINE VIEW ENTITY` require SAP_BASIS 755 or newer. This is a fixture limit, not a claim that older systems lack classic CDS or DCL. Behavior-extension tests also require the table and behavior collections.
+- RAP E2E tests probe features before deciding availability; an unpopulated feature cache is not a skip reason.
+- Optional `ZCL_ABAPGIT_HASH` coverage and `ZC_FBCLUBTP` documentation are missing-fixture skips when absent. A "No Knowledge Transfer Document" response does not pass the decoded-content test.
+- A 404 from `/packages/valuehelps/transportlayers` skips that value-help test only; other transport tests still run.
+
+Program lifecycle tests use unique names and require successful activation. The separately reproduced
+7.50 metadata gap after an absent-program pre-delete remains [COMPAT-18](../docs_page/roadmap.md#compat-18),
+not an unsupported-backend skip.
 
 ### Root cause: DTEL v2 content-type 415 on older releases
 

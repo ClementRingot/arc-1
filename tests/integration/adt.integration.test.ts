@@ -7,7 +7,7 @@
  * Run: npm run test:integration
  */
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, type TestContext } from 'vitest';
 import { classifyCdsImpact } from '../../src/adt/cds-impact.js';
 import type { AdtClient } from '../../src/adt/client.js';
 import { findWhereUsed } from '../../src/adt/codeintel.js';
@@ -45,6 +45,17 @@ import { getServerDrivenObject, supportsServerDrivenObject } from '../../src/adt
 import { expectSapFailureClass } from '../helpers/expected-error.js';
 import { requireOrSkip, SkipReason, skipTest } from '../helpers/skip-policy.js';
 import { getTestClient, requireSapCredentials } from './helpers.js';
+
+/** These fixtures use DEFINE VIEW ENTITY, introduced in SAP_BASIS 755. */
+async function requireViewEntityFixture(ctx: TestContext, client: AdtClient): Promise<void> {
+  const basis = (await client.getInstalledComponents()).find((c) => c.name === 'SAP_BASIS');
+  expect(basis?.release).toMatch(/^\d{3}$/);
+  requireOrSkip(
+    ctx,
+    Number(basis?.release) >= 755 ? true : undefined,
+    `${SkipReason.BACKEND_UNSUPPORTED}: test fixture requires CDS view entities (SAP_BASIS >= 755)`,
+  );
+}
 
 describe('ADT Integration Tests', () => {
   let client: AdtClient;
@@ -307,43 +318,25 @@ describe('ADT Integration Tests', () => {
 
   // ─── getSubpackages (repository/nodestructure) ────────────────────
   //
-  // Direct-child enumeration of a DEVCLASS. Backs `allowedPackages`
-  // subtree rules (`ZFOO/**`). The PREVIOUS implementation used
-  // `informationsystem/search?packageName=X&objectType=DEVC/K`, which
-  // live S/4HANA 2023 silently ignores the `packageName` filter on —
-  // returning ~1000 unrelated packages instead of children. The fix
-  // uses `POST /sap/bc/adt/repository/nodestructure`, which matches
-  // `SELECT devclass FROM tdevc WHERE parentcl = ?` exactly. These
-  // tests are the missing safety net that would have caught the bug.
+  // Direct children back allowedPackages subtree rules. The old search endpoint
+  // ignored packageName and returned unrelated packages; nodestructure must not.
   describe('getSubpackages (repository/nodestructure)', () => {
-    it('returns the exact 5 known DEVC/K children of SABP_UNIT', async () => {
-      // SABP_UNIT is the ABAP unit-test framework root package — present
-      // on every SAP_BASIS 7.5+ system the project supports, with five
-      // stable direct children. If your test landscape has additions,
-      // the assertion uses `arrayContaining` so it tolerates a superset.
+    it('returns the stable direct children of SABP_UNIT', async () => {
+      // Other direct children differ between 750, 758 and 816.
       const subs = await client.getSubpackages('SABP_UNIT');
-      expect(subs).toEqual(
-        expect.arrayContaining([
-          'SABP_UNIT_CORE',
-          'SABP_UNIT_EXECUTION_API',
-          'SABP_UNIT_GUI',
-          'SABP_UNIT_SCRATCH',
-          'SABP_UNIT_SHARED',
-        ]),
-      );
-      // Every entry must be uppercase and not contain the parent itself.
-      expect(subs.every((n) => n === n.toUpperCase())).toBe(true);
+      expect(subs).toEqual(expect.arrayContaining(['SABP_UNIT_CORE', 'SABP_UNIT_SCRATCH']));
+      expect(subs.every((n) => n === n.toUpperCase() && n.length > 0)).toBe(true);
+      expect(new Set(subs).size).toBe(subs.length);
       expect(subs).not.toContain('SABP_UNIT');
     });
 
-    it('returns a non-empty array for SABP_UNIT_CORE (one level deeper)', async () => {
-      // Proves BFS continuation: SABP_UNIT_CORE has its own children.
-      // We don't pin the exact set — newer SAP_BASIS releases may add
-      // more — but the array must be non-empty and uppercased.
+    it('can enumerate SABP_UNIT_CORE, including when it is a leaf', async () => {
+      // CORE is a leaf on 750; newer systems have subpackages.
       const subs = await client.getSubpackages('SABP_UNIT_CORE');
-      expect(subs.length).toBeGreaterThan(0);
+      expect(Array.isArray(subs)).toBe(true);
       expect(subs.every((n) => n === n.toUpperCase() && n.length > 0)).toBe(true);
-      expect(new Set(subs).size).toBe(subs.length); // no duplicates
+      expect(new Set(subs).size).toBe(subs.length);
+      expect(subs).not.toContain('SABP_UNIT_CORE');
     });
 
     it('returns [] for a non-existent parent (not an error — SAP responds 200 with empty body)', async () => {
@@ -587,10 +580,14 @@ describe('ADT Integration Tests', () => {
       const { source } = await client.getTabl('T000');
       expect(source).toBeTruthy();
       expect(source.toLowerCase()).toContain('t000');
-      // Transparent-table marker — appears on both /tables/ and /structures/ readbacks.
-      expect(source).toMatch(/@AbapCatalog\.tableCategory\s*:\s*#TRANSPARENT/i);
+      expect(source).toMatch(/define\s+(?:table|type)\s+t000\b/i);
+      expect(source).toMatch(/\bmandt\b/i);
       const resolvedUrl = await client.resolveTablObjectUrl('T000');
       expect(resolvedUrl).toMatch(/\/sap\/bc\/adt\/ddic\/(tables|structures)\/T000$/);
+      // The legacy /structures response omits table annotations; T000 is still transparent.
+      if (resolvedUrl.includes('/tables/')) {
+        expect(source).toMatch(/@AbapCatalog\.tableCategory\s*:\s*#TRANSPARENT/i);
+      }
     });
 
     it('resolveTablObjectUrlForWrite returns /tables/ for TABL/DT when /tables/ endpoint is available (issue #285)', async () => {
@@ -1794,7 +1791,7 @@ describe('ADT Integration Tests', () => {
     }
 
     it('source=adt|db|both all find a freshly-created Z DDLS in $TMP (no splitBrain)', async (ctx) => {
-      requireOrSkip(ctx, process.env.TEST_SAP_URL, SkipReason.NO_CREDENTIALS);
+      await requireViewEntityFixture(ctx, client);
       const { generateUniqueName } = await import('./crud-harness.js');
       const { handleToolCall } = await import('../../src/handlers/dispatch.js');
       const ddlsName = generateUniqueName('ZRES_TADIR_');
@@ -1856,7 +1853,7 @@ describe('ADT Integration Tests', () => {
     });
 
     it('source variants stay shape-consistent after delete (ghost or clean)', async (ctx) => {
-      requireOrSkip(ctx, process.env.TEST_SAP_URL, SkipReason.NO_CREDENTIALS);
+      await requireViewEntityFixture(ctx, client);
       const { generateUniqueName } = await import('./crud-harness.js');
       const { handleToolCall } = await import('../../src/handlers/dispatch.js');
       const ddlsName = generateUniqueName('ZRES_TGHOST_');
@@ -1930,7 +1927,7 @@ describe('ADT Integration Tests', () => {
     };
 
     it('default (activateAtEnd=false) fails on composition-linked DDLS — documents the failure mode', async (ctx) => {
-      requireOrSkip(ctx, process.env.TEST_SAP_URL, SkipReason.NO_CREDENTIALS);
+      await requireViewEntityFixture(ctx, client);
       const { generateUniqueName } = await import('./crud-harness.js');
       const { handleToolCall } = await import('../../src/handlers/dispatch.js');
       const parentName = generateUniqueName('ZRES_BCPAR_');
@@ -1984,7 +1981,7 @@ describe('ADT Integration Tests', () => {
     });
 
     it('activateAtEnd=true activates a composition-linked DDLS pair in a single terminal batch', async (ctx) => {
-      requireOrSkip(ctx, process.env.TEST_SAP_URL, SkipReason.NO_CREDENTIALS);
+      await requireViewEntityFixture(ctx, client);
       const { generateUniqueName } = await import('./crud-harness.js');
       const { handleToolCall } = await import('../../src/handlers/dispatch.js');
       const parentName = generateUniqueName('ZRES_AAPAR_');
@@ -2542,19 +2539,12 @@ describe('ADT Integration Tests', () => {
     // Regression guard: the old implementation hit /functions/groups/<name> (metadata only,
     // no function list) and parsed a shape ADT never emits, so it always returned
     // {name:"", functions:[]}. It now reads /objectstructure and parses the FUGR/FF
-    // (function) + FUGR/I (include) elements. Targets abapGit's parallel FUGR; skip if absent.
-    it('returns the group name + non-empty function-module list', async (ctx) => {
-      let fg: Awaited<ReturnType<typeof client.getFunctionGroup>> | undefined;
-      try {
-        fg = await client.getFunctionGroup('ZABAPGIT_PARALLEL');
-      } catch {
-        fg = undefined;
-      }
-      requireOrSkip(ctx, fg, `${SkipReason.NO_FIXTURE}: function group ZABAPGIT_PARALLEL not present`);
-
-      expect(fg.name).toBe('ZABAPGIT_PARALLEL');
+    // (function) + FUGR/I (include) elements. SUNI ships on all three on-prem test systems.
+    it('returns the group name + non-empty function-module list', async () => {
+      const fg = await client.getFunctionGroup('SUNI');
+      expect(fg.name).toBe('SUNI');
       expect(fg.functions.length).toBeGreaterThan(0);
-      expect(fg.functions).toContain('Z_ABAPGIT_SERIALIZE_PARALLEL');
+      expect(fg.functions).toContain('FUNCTION_EXISTS');
       expect(fg.includes.length).toBeGreaterThan(0);
     });
   });
@@ -2600,6 +2590,15 @@ describe('BDEF behavior extension create (#10)', () => {
       toolMode: 'standard',
     } as unknown as Parameters<typeof handleToolCall>[1];
     const client = getTestClient();
+    const { map } = await fetchDiscoveryDocument(client.http);
+    expect(map.size, 'ADT discovery must succeed before checking fixture prerequisites').toBeGreaterThan(0);
+    for (const path of ['/sap/bc/adt/ddic/tables', '/sap/bc/adt/bo/behaviordefinitions']) {
+      requireOrSkip(
+        ctx,
+        map.has(path) ? true : undefined,
+        `${SkipReason.BACKEND_UNSUPPORTED}: behavior-extension fixture requires ${path}`,
+      );
+    }
     const tab = generateUniqueName('ZARC1B'); // At most 16 characters with a four-letter run ID.
     const root = `ZR_${tab}`;
     const ext = `${root}_X`;
@@ -2781,7 +2780,7 @@ describe('Self-correcting unknown-column hint (FEAT-64)', () => {
 // The coverage measurement endpoint is standard ADT, live-verified on 7.50 + 758 + 816 (2026-06-25 —
 // identical {stmt 3/4, branch 2/3, proc 1/1} for a controlled tested class on each). This CI test
 // targets ZCL_ABAPGIT_HASH (758: stmt 61% / branch 36% / proc 38%); abapGit classes carry unit tests
-// on 758 but are absent on a4h-2025/816 + NPL 7.50, so it skips cleanly there (NOT a coverage gap).
+// where installed. Its absence is a fixture gap, not missing coverage support.
 describe('AUnit coverage (FEAT-41)', () => {
   it('unittest coverage=true returns statement/branch/procedure for a class with tests', async (ctx) => {
     requireOrSkip(ctx, process.env.TEST_SAP_URL, SkipReason.NO_CREDENTIALS);
@@ -2791,7 +2790,17 @@ describe('AUnit coverage (FEAT-41)', () => {
       arc1HttpAddr: '0.0.0.0:8080',
       toolMode: 'standard',
     } as unknown as Parameters<typeof handleToolCall>[1];
-    const result = await handleToolCall(getTestClient(), config, 'SAPDiagnose', {
+    const client = getTestClient();
+    const fixtureUri = '/sap/bc/adt/oo/classes/zcl_abapgit_hash';
+    try {
+      await client.http.get(fixtureUri);
+    } catch (error) {
+      if (error instanceof AdtApiError && error.statusCode === 404 && error.path === fixtureUri) {
+        return skipTest(ctx, `${SkipReason.NO_FIXTURE}: ZCL_ABAPGIT_HASH`);
+      }
+      throw error;
+    }
+    const result = await handleToolCall(client, config, 'SAPDiagnose', {
       action: 'unittest',
       type: 'CLAS',
       name: 'ZCL_ABAPGIT_HASH',

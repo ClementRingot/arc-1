@@ -12,6 +12,11 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { expect } from 'vitest';
+import {
+  DEVC_WRITE_UNAVAILABLE_HINT,
+  DOMA_WRITE_UNAVAILABLE_HINT,
+  TABL_DT_WRITE_UNAVAILABLE_HINT,
+} from '../../src/handlers/write-helpers.js';
 import { RUN_ID } from '../helpers/run-id.js';
 import { skipTest } from '../helpers/skip-policy.js';
 
@@ -252,11 +257,32 @@ export function expectToolError(result: ToolResult, ...expectedSubstrings: strin
 export function classifyToolErrorSkip(result: ToolResult): string | null {
   if (!result.isError) return null;
   const text = result.content?.[0]?.text ?? '';
-  // Release gap — ADT endpoints absent on pre-7.52 systems.
-  if (/\/sap\/bc\/adt\/ddic\/domains(?:\/|\b).*(?:does not exist|not found)/i.test(text)) {
+  // Batch preflight can report the same refusals. Use its manifest so an unrelated
+  // failed entry or an attempted write can never be hidden by a capability skip.
+  if (result.content[1]?.text) {
+    try {
+      const { batch } = JSON.parse(result.content[1].text);
+      const refusals = [DOMA_WRITE_UNAVAILABLE_HINT, TABL_DT_WRITE_UNAVAILABLE_HINT, DEVC_WRITE_UNAVAILABLE_HINT];
+      const failed = batch?.results?.filter((entry: { status: string }) => entry.status === 'failed');
+      if (
+        batch?.phase === 'preflight' &&
+        failed?.length > 0 &&
+        batch.results.every((entry: { creation: string }) => entry.creation === 'not_attempted') &&
+        failed.every((entry: { error: string }) => refusals.includes(entry.error))
+      ) {
+        return 'Backend feature not supported on this SAP system: batch fixture requires an unavailable ADT collection';
+      }
+      return null;
+    } catch {
+      // A malformed manifest is not evidence of an unsupported backend.
+      return null;
+    }
+  }
+  // Explicit collection refusals; an individual object's 404 is not a release gap.
+  if (text === DOMA_WRITE_UNAVAILABLE_HINT) {
     return 'Backend feature not supported on this SAP system: /ddic/domains endpoint not available on this release';
   }
-  if (/\/sap\/bc\/adt\/ddic\/tables(?:\?|\b).*(?:does not exist|not found)/i.test(text)) {
+  if (text === TABL_DT_WRITE_UNAVAILABLE_HINT) {
     return 'Backend feature not supported on this SAP system: /ddic/tables collection not available on this release';
   }
   if (/\/sap\/bc\/adt\/ddic\/tables\/[A-Z0-9_]+\/source.*(?:does not exist|not found)/i.test(text)) {
@@ -273,7 +299,7 @@ export function classifyToolErrorSkip(result: ToolResult): string | null {
   if (/\/sap\/bc\/adt\/ddic\/dataelements\b.*Unsupported Media Type/i.test(text)) {
     return 'Backend feature not supported on this SAP system: DTEL v2 content type not supported on this release';
   }
-  if (/\/sap\/bc\/adt\/packages\b.*(?:No suitable|does not exist)/i.test(text)) {
+  if (text === DEVC_WRITE_UNAVAILABLE_HINT) {
     return 'Backend feature not supported on this SAP system: /packages endpoint not available on this release';
   }
   if (/\/sap\/bc\/adt\/datapreview\/ddic\b.*No suitable resource/i.test(text)) {
