@@ -53,6 +53,13 @@ export type SystemType = 'btp' | 'onprem';
 /** ADT discovery map: listed endpoint path -> advertised MIME types ([] means presence only, not permission). */
 export type DiscoveryMap = Map<string, string[]>;
 
+export interface TextSearchStatus {
+  available: boolean;
+  reason?: string;
+  /** Conclusive backend absence/disablement, never a user authorization or transient failure. */
+  unsupported?: true;
+}
+
 /** Resolved features after probing */
 export interface ResolvedFeatures {
   hana: FeatureStatus;
@@ -71,7 +78,7 @@ export interface ResolvedFeatures {
   /** Whether the probe detected the type or applied an explicit configuration override. */
   systemTypeSource?: 'probe' | 'config';
   /** Text search (source_code) probe result — available, or reason it's unavailable */
-  textSearch?: { available: boolean; reason?: string };
+  textSearch?: TextSearchStatus;
   /** Authorization probe results — search and transport access */
   authProbe?: AuthProbeResult;
   /** ADT discovery MIME map used by HTTP content negotiation */

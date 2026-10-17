@@ -199,12 +199,12 @@ export const SAPCONTEXT_TYPES_BTP = sapContextTypes.btp;
  */
 export function isGitToolVisible(
   config: Pick<ServerConfig, 'featureAbapGit' | 'featureGcts'>,
-  resolvedFeatures: Pick<ResolvedFeatures, 'gcts' | 'abapGit'> | undefined,
+  resolvedFeatures: Partial<Pick<ResolvedFeatures, 'gcts' | 'abapGit'>> | undefined,
 ): boolean {
-  if (resolvedFeatures === undefined) {
-    return config.featureAbapGit !== 'off' || config.featureGcts !== 'off';
-  }
-  return !!(resolvedFeatures.gcts?.available || resolvedFeatures.abapGit?.available);
+  return (
+    (resolvedFeatures?.gcts?.available ?? config.featureGcts !== 'off') ||
+    (resolvedFeatures?.abapGit?.available ?? config.featureAbapGit !== 'off')
+  );
 }
 
 // ─── Derived union types ────────────────────────────────────────────

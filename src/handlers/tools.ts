@@ -391,7 +391,7 @@ function withStrictSchemas(tools: ToolDefinition[]): ToolDefinition[] {
 export function getToolDefinitions(
   config: ServerConfig,
   textSearchAvailable?: boolean,
-  resolvedFeatures?: ResolvedFeatures,
+  resolvedFeatures?: Partial<ResolvedFeatures>,
   options: ToolDefinitionOptions = {},
 ): ToolDefinition[] {
   // Hyperfocused mode: single universal SAP tool (~200 tokens).

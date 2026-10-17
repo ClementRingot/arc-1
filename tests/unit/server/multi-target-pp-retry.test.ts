@@ -17,8 +17,11 @@ vi.mock('../../../src/server/multi-target-destination-runtime.js', async (import
 const { AdtClient } = await import('../../../src/adt/client.js');
 const { AdtApiError } = await import('../../../src/adt/errors.js');
 const { AdtHttpClient } = await import('../../../src/adt/http.js');
+const featureProbeModule = await import('../../../src/adt/features.js');
 const { featuresOff } = await import('../handlers/handler-test-config.js');
-const { resetCachedFeatures, setCachedFeatures } = await import('../../../src/handlers/feature-cache.js');
+const { getCachedFeatures, resetCachedFeatures, setCachedFeatures } = await import(
+  '../../../src/handlers/feature-cache.js'
+);
 const { canonicalDestinationUrl, opaqueDestinationValue } = await import(
   '../../../src/server/destination-discovery.js'
 );
@@ -198,7 +201,7 @@ describe('multi-target principal-propagation retry', () => {
     });
   });
 
-  it('does not cache authorization-limited feature evidence across per-user PP calls', async () => {
+  it('retains successful backend evidence while leaving a PP authorization-limited feature unknown', async () => {
     const current = registry();
     const instanceConfig = DEFAULT_CONFIG;
     const aggregateConfig = buildAggregateToolSurfaceConfig(instanceConfig, current.targets);
@@ -231,6 +234,117 @@ describe('multi-target principal-propagation retry', () => {
 
     expect((await call(request, { authInfo: READ_AUTH })).isError).not.toBe(true);
     expect((await call(request, { authInfo: READ_AUTH })).isError).not.toBe(true);
-    expect(featureProbes).toBe(2);
+    expect(featureProbes).toBe(1);
+    expect(getCachedFeatures('A4H/100')?.hana).toBeUndefined();
+    expect(getCachedFeatures('A4H/100')?.authProbe).toBeUndefined();
+    expect(getCachedFeatures('A4H/100')?.rap?.available).toBe(true);
   });
+
+  it.each(['authorization', 'network'])(
+    'retries a full probe after only configuration survived a %s failure',
+    async (failure) => {
+      const current = registry();
+      resolveRuntimeSubaccountPpDestination.mockResolvedValue({
+        destination: DESTINATION,
+        authTokens: { sapConnectivityAuth: 'Bearer per-user-assertion' },
+      });
+      vi.spyOn(AdtClient.prototype, 'getSystemInfo').mockResolvedValue('{"sid":"A4H","client":"100"}');
+      let recovered = false;
+      let fullProbes = 0;
+      vi.spyOn(AdtHttpClient.prototype, 'get').mockImplementation(async (path) => {
+        if (path === '/sap/bc/adt/ddic/sysinfo/hanainfo') fullProbes++;
+        if (!recovered)
+          throw failure === 'authorization' ? new AdtApiError('Forbidden', 403, path) : new Error('offline');
+        return { statusCode: 200, headers: {}, body: '<root/>' };
+      });
+      const instanceConfig = { ...DEFAULT_CONFIG, featureGcts: 'off' as const };
+      const server = createServer(buildAggregateToolSurfaceConfig(instanceConfig, current.targets), {
+        btpConfig: BTP_CONFIG,
+        multiTarget: { mode: 'aggregate', registry: current, instanceConfig },
+      });
+      const call = requestHandler(server);
+      const request = {
+        method: 'tools/call',
+        params: { name: 'SAPRead', arguments: { type: 'SYSTEM', target: 'A4H/100' } },
+      };
+      await call(request, { authInfo: READ_AUTH });
+      expect(getCachedFeatures('A4H/100')).toMatchObject({ systemType: 'onprem', gcts: { mode: 'off' } });
+      expect(getCachedFeatures('A4H/100')?.rap).toBeUndefined();
+      recovered = true;
+      await call(request, { authInfo: { ...READ_AUTH, extra: { userName: 'AUTHORIZED_USER' } } });
+      expect(fullProbes).toBe(2);
+      expect(getCachedFeatures('A4H/100')?.rap?.available).toBe(true);
+    },
+  );
+
+  it('still probes all features after a failed full probe followed by a successful source search', async () => {
+    const current = registry();
+    resolveRuntimeSubaccountPpDestination.mockResolvedValue({
+      destination: DESTINATION,
+      authTokens: { sapConnectivityAuth: 'Bearer per-user-assertion' },
+    });
+    vi.spyOn(AdtHttpClient.prototype, 'get').mockResolvedValue({ statusCode: 200, headers: {}, body: '<root/>' });
+    vi.spyOn(AdtClient.prototype, 'searchSource').mockResolvedValue([]);
+    vi.spyOn(AdtClient.prototype, 'getSystemInfo').mockResolvedValue('{"sid":"A4H","client":"100"}');
+    const fullProbe = vi.spyOn(featureProbeModule, 'probeFeatures').mockRejectedValueOnce(new Error('probe failed'));
+    const server = createServer(buildAggregateToolSurfaceConfig(DEFAULT_CONFIG, current.targets), {
+      btpConfig: BTP_CONFIG,
+      multiTarget: { mode: 'aggregate', registry: current, instanceConfig: DEFAULT_CONFIG },
+    });
+    const call = requestHandler(server);
+    await call(
+      {
+        method: 'tools/call',
+        params: { name: 'SAPSearch', arguments: { searchType: 'source_code', query: 'test', target: 'A4H/100' } },
+      },
+      { authInfo: READ_AUTH },
+    );
+    expect(getCachedFeatures('A4H/100')?.textSearch?.available).toBe(true);
+    await call(
+      { method: 'tools/call', params: { name: 'SAPRead', arguments: { type: 'SYSTEM', target: 'A4H/100' } } },
+      { authInfo: READ_AUTH },
+    );
+    expect(fullProbe).toHaveBeenCalledTimes(2);
+    expect(getCachedFeatures('A4H/100')?.rap?.available).toBe(true);
+  });
+
+  it.each([
+    ['gcts', '/sap/bc/cts_abapvcs/system', 404],
+    ['ui5repo', '/sap/opu/odata/UI5/ABAP_REPOSITORY_SRV', 200],
+    ['abapGit', '/sap/bc/adt/abapgit/repos', 404],
+  ] as const)(
+    'retains %s evidence without treating denied ADT probes as complete',
+    async (feature, endpoint, status) => {
+      const current = registry();
+      resolveRuntimeSubaccountPpDestination.mockResolvedValue({
+        destination: DESTINATION,
+        authTokens: { sapConnectivityAuth: 'Bearer per-user-assertion' },
+      });
+      vi.spyOn(AdtClient.prototype, 'getSystemInfo').mockResolvedValue('{"sid":"A4H","client":"100"}');
+      let authorized = false;
+      let fullProbes = 0;
+      vi.spyOn(AdtHttpClient.prototype, 'get').mockImplementation(async (path) => {
+        if (path === '/sap/bc/adt/ddic/sysinfo/hanainfo') fullProbes++;
+        if (path === endpoint && status === 404) throw new AdtApiError('Not found', 404, path);
+        if (!authorized && path !== endpoint) throw new AdtApiError('Forbidden', 403, path);
+        return { statusCode: 200, headers: {}, body: '<root/>' };
+      });
+      const server = createServer(buildAggregateToolSurfaceConfig(DEFAULT_CONFIG, current.targets), {
+        btpConfig: BTP_CONFIG,
+        multiTarget: { mode: 'aggregate', registry: current, instanceConfig: DEFAULT_CONFIG },
+      });
+      const call = requestHandler(server);
+      const request = {
+        method: 'tools/call',
+        params: { name: 'SAPRead', arguments: { type: 'SYSTEM', target: 'A4H/100' } },
+      };
+      await call(request, { authInfo: READ_AUTH });
+      expect(getCachedFeatures('A4H/100')?.[feature]?.available).toBe(status === 200);
+      expect(getCachedFeatures('A4H/100')?.rap).toBeUndefined();
+      authorized = true;
+      await call(request, { authInfo: { ...READ_AUTH, extra: { userName: 'AUTHORIZED_USER' } } });
+      expect(fullProbes).toBe(2);
+      expect(getCachedFeatures('A4H/100')?.rap?.available).toBe(true);
+    },
+  );
 });

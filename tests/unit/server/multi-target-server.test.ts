@@ -10,7 +10,6 @@ import {
 } from '../../../src/server/destination-registry.js';
 import { logger } from '../../../src/server/logger.js';
 import { buildTargetCatalog, TARGET_CATALOG_DIAGNOSTIC_LIMIT } from '../../../src/server/multi-target-catalog.js';
-import { hasAuthorizationLimitedFeatureEvidence } from '../../../src/server/multi-target-feature-state.js';
 import { buildAggregateToolSurfaceConfig, buildMultiTargetConfig } from '../../../src/server/multi-target-runtime.js';
 import { parseSapTargetsArguments } from '../../../src/server/multi-target-server.js';
 import { createServer, resolveSingleTargetOverlapState } from '../../../src/server/server.js';
@@ -269,29 +268,6 @@ describe('multi-target MCP servers', () => {
       diagnosticsTruncated: true,
     });
     expect(broadActiveQuery.admin.destinations).toHaveLength(TARGET_CATALOG_DIAGNOSTIC_LIMIT);
-  });
-
-  it('keeps authorization-limited feature evidence in the unknown state', () => {
-    const status = (id: string, message?: string) => ({ id, available: !message, mode: 'auto', message });
-    const features = {
-      hana: status('hana'),
-      abapGit: status('abapGit'),
-      gcts: status('gcts'),
-      rap: status('rap', 'forbidden (403) — endpoint exists but user lacks authorization'),
-      amdp: status('amdp'),
-      ui5: status('ui5'),
-      transport: status('transport'),
-      ui5repo: status('ui5repo'),
-      flp: status('flp'),
-    };
-    expect(hasAuthorizationLimitedFeatureEvidence(features)).toBe(true);
-    expect(
-      hasAuthorizationLimitedFeatureEvidence({
-        ...features,
-        rap: status('rap'),
-        textSearch: { available: false, reason: 'ICF endpoint not found (404)' },
-      }),
-    ).toBe(false);
   });
 
   it('keeps a zero-target aggregate endpoint alive with no SAP tools', async () => {

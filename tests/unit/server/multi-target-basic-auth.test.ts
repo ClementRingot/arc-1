@@ -672,35 +672,45 @@ describe('multi-target shared Basic authentication', () => {
     expect(sharedAuthState.getHealth('A4H/100').status).toBe('healthy');
   });
 
-  it('caches authorization-limited shared feature evidence and reprobes after credential rotation', async () => {
-    const current = registry();
-    const target = current.targets[0];
-    const sharedAuthState = new MultiTargetSharedAuthState();
-    let password = 'FIRST_PASSWORD';
-    resolveRuntimeSubaccountDestination.mockImplementation(async () => ({ ...BASE_DESTINATION, Password: password }));
-    vi.spyOn(AdtClient.prototype, 'getSystemInfo').mockResolvedValue('{"sid":"A4H"}');
-    let featureProbes = 0;
-    vi.spyOn(AdtHttpClient.prototype, 'get').mockImplementation(async (path) => {
-      if (path === '/sap/bc/adt/ddic/sysinfo/hanainfo') {
-        featureProbes += 1;
-        throw new AdtApiError('Forbidden', 403, path, 'Authorization denied');
-      }
-      return DISCOVERY_RESPONSE;
-    });
-    const server = createServer(buildMultiTargetConfig(INSTANCE_CONFIG, target), {
-      btpConfig: BTP_CONFIG,
-      multiTarget: { mode: 'pinned', registry: current, instanceConfig: INSTANCE_CONFIG, target, sharedAuthState },
-    });
-    const call = requestHandler(server);
+  it.each([false, true])(
+    'caches shared feature denials and reprobes after rotation (all denied: %s)',
+    async (allDenied) => {
+      const current = registry();
+      const target = current.targets[0];
+      const sharedAuthState = new MultiTargetSharedAuthState();
+      let password = 'FIRST_PASSWORD';
+      resolveRuntimeSubaccountDestination.mockImplementation(async () => ({ ...BASE_DESTINATION, Password: password }));
+      vi.spyOn(AdtClient.prototype, 'getSystemInfo').mockResolvedValue('{"sid":"A4H"}');
+      let featureProbes = 0;
+      vi.spyOn(AdtHttpClient.prototype, 'get').mockImplementation(async (path) => {
+        if (path === '/sap/bc/adt/ddic/sysinfo/hanainfo') {
+          featureProbes += 1;
+          throw new AdtApiError('Forbidden', 403, path, 'Authorization denied');
+        }
+        if (allDenied && !path.endsWith('/discovery')) throw new AdtApiError('Forbidden', 403, path);
+        if (allDenied)
+          return {
+            statusCode: 200,
+            headers: { 'content-type': 'application/atomsvc+xml' },
+            body: '<app:service xmlns:app="http://www.w3.org/2007/app"/>',
+          };
+        return DISCOVERY_RESPONSE;
+      });
+      const server = createServer(buildMultiTargetConfig(INSTANCE_CONFIG, target), {
+        btpConfig: BTP_CONFIG,
+        multiTarget: { mode: 'pinned', registry: current, instanceConfig: INSTANCE_CONFIG, target, sharedAuthState },
+      });
+      const call = requestHandler(server);
 
-    expect((await call(toolRequest('pinned'), { authInfo: READ_AUTH })).isError).not.toBe(true);
-    expect((await call(toolRequest('pinned'), { authInfo: READ_AUTH })).isError).not.toBe(true);
-    expect(featureProbes).toBe(1);
+      expect((await call(toolRequest('pinned'), { authInfo: READ_AUTH })).isError).not.toBe(true);
+      expect((await call(toolRequest('pinned'), { authInfo: READ_AUTH })).isError).not.toBe(true);
+      expect(featureProbes).toBe(1);
 
-    password = 'ROTATED_PASSWORD';
-    expect((await call(toolRequest('pinned'), { authInfo: READ_AUTH })).isError).not.toBe(true);
-    expect(featureProbes).toBe(2);
-  });
+      password = 'ROTATED_PASSWORD';
+      expect((await call(toolRequest('pinned'), { authInfo: READ_AUTH })).isError).not.toBe(true);
+      expect(featureProbes).toBe(2);
+    },
+  );
 
   it('recovers from missing destination credentials on the next call without restart', async () => {
     const current = registry();

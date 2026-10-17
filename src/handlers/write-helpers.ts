@@ -1135,7 +1135,7 @@ export function runRapPreflightValidation(
   source: string,
   type: string,
   name: string,
-  features: ResolvedFeatures | undefined,
+  features: Pick<ResolvedFeatures, 'systemType' | 'abapRelease'> | undefined,
   configSystemType: ServerConfig['systemType'],
   perCallOverride?: boolean,
 ): PreWriteRapPreflightResult {

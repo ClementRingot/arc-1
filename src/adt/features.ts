@@ -23,7 +23,7 @@ import { fetchDiscoveryDocument } from './discovery.js';
 import { AdtApiError } from './errors.js';
 import type { AdtHttpClient } from './http.js';
 import { parseReleaseNumber } from './release.js';
-import type { AuthProbeResult, FeatureStatus, ResolvedFeatures, SystemType } from './types.js';
+import type { AuthProbeResult, FeatureStatus, ResolvedFeatures, SystemType, TextSearchStatus } from './types.js';
 import { parseInstalledComponents, parseSyntaxConfigurations } from './xml-parser.js';
 
 /** Probe definition: which URL to check for each feature */
@@ -356,7 +356,7 @@ export function detectSystemType(
  * a search that legitimately found nothing. The `db` selector is part of the
  * advertised support template; an explicit empty value asks about source search.
  */
-export async function probeTextSearch(client: AdtHttpClient): Promise<{ available: boolean; reason?: string }> {
+export async function probeTextSearch(client: AdtHttpClient): Promise<TextSearchStatus> {
   try {
     await client.get('/sap/bc/adt/repository/informationsystem/textsearch/support?db=', undefined, {
       probe: true,
@@ -382,25 +382,25 @@ export async function probeTextSearch(client: AdtHttpClient): Promise<{ availabl
  * SAP ADT's own `AdtRisTextSearchService.isSupported()` catches the latter as
  * `ResourceForbiddenException` and returns false. Preserve that distinction so
  * users are not sent to SU53/PFCG for a feature that is disabled server-side. */
-function isUnsupportedTextSearchResponse(statusCode: number, responseBody?: string): boolean {
-  if (statusCode !== 403 || !responseBody) return false;
+function unsupportedTextSearchMessage(statusCode: number, responseBody?: string): string | undefined {
+  if (![403, 500].includes(statusCode) || !responseBody) return undefined;
   const properties = AdtApiError.extractProperties(responseBody);
   const messageId = (properties['T100KEY-ID'] ?? properties['T100KEY-MSGID'] ?? '').toUpperCase();
   const messageNumber = properties['T100KEY-NO'] ?? properties['T100KEY-MSGNO'] ?? '';
-  return (
-    (messageId === 'SADT_REST' && messageNumber.padStart(3, '0') === '020') ||
-    /\bthe action is not supported\b/i.test(responseBody)
-  );
+  if (statusCode === 403 && messageId === 'SADT_REST' && messageNumber.padStart(3, '0') === '020')
+    return 'SADT_REST 020';
+  if (statusCode === 500 && messageId === 'SRIS_SEARCH' && messageNumber.padStart(3, '0') === '006')
+    return 'SRIS_SEARCH 006';
+  return undefined;
 }
 
-export function classifyTextSearchError(
-  statusCode: number,
-  responseBody?: string,
-): { available: boolean; reason?: string } {
-  if (isUnsupportedTextSearchResponse(statusCode, responseBody)) {
+export function classifyTextSearchError(statusCode: number, responseBody?: string): TextSearchStatus {
+  const unsupportedMessage = unsupportedTextSearchMessage(statusCode, responseBody);
+  if (unsupportedMessage) {
     return {
       available: false,
-      reason: 'Source code search is not supported by this SAP backend (SADT_REST 020).',
+      unsupported: true,
+      reason: `Source code search is not supported by this SAP backend (${unsupportedMessage}).`,
     };
   }
 
@@ -414,6 +414,7 @@ export function classifyTextSearchError(
     case 404:
       return {
         available: false,
+        unsupported: true,
         reason:
           'The textsearch endpoint is not available on this system — ADT answered "No suitable resource found". ' +
           'This is the generic reply for any URI the ADT handler does not map, so confirm the collection is ' +
@@ -422,7 +423,11 @@ export function classifyTextSearchError(
     case 500:
       return { available: false, reason: 'Search framework error (component BC-DWB-AIE) — check SAP Note 3605050.' };
     case 501:
-      return { available: false, reason: 'Not implemented — source code search requires SAP_BASIS >= 7.51.' };
+      return {
+        available: false,
+        unsupported: true,
+        reason: 'Not implemented — source code search requires SAP_BASIS >= 7.51.',
+      };
     default:
       return { available: false, reason: `textsearch returned HTTP ${statusCode}.` };
   }

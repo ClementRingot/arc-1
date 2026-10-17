@@ -87,7 +87,7 @@ export function expandHyperfocusedArgs(args: Record<string, unknown>):
  */
 export function getHyperfocusedToolDefinition(
   config: ServerConfig,
-  resolvedFeatures?: ResolvedFeatures,
+  resolvedFeatures?: Partial<ResolvedFeatures>,
 ): ToolDefinition {
   const gitAvailable = isGitToolVisible(config, resolvedFeatures);
   // Mixed delegators stay visible when their read sub-actions are usable.

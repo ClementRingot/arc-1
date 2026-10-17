@@ -22,8 +22,10 @@ import { hasRequiredScope } from '../authz/policy.js';
 import type { CachingLayer } from '../cache/caching-layer.js';
 import { getToolRegistry, handleToolCall } from '../handlers/dispatch.js';
 import {
+  cacheProbedFeatures,
   getCachedDiscovery,
   getCachedFeatures,
+  hasCompletedFeatureProbe,
   setCachedDiscovery,
   setCachedFeatures,
 } from '../handlers/feature-cache.js';
@@ -53,7 +55,7 @@ import {
   RuntimeDestinationLevelError,
   resolveRuntimeSubaccountPpDestination,
 } from './multi-target-destination-runtime.js';
-import { ensureMultiTargetFeatureProbe, hasAuthorizationLimitedFeatureEvidence } from './multi-target-feature-state.js';
+import { ensureMultiTargetFeatureProbe } from './multi-target-feature-state.js';
 import type { MultiTargetRequestProjection } from './multi-target-request-projection.js';
 import {
   buildAggregateToolSurfaceConfig,
@@ -434,13 +436,9 @@ export function applyPerUserAuthTokens(
 }
 
 /**
- * Run a one-time feature probe against the SAP system using the shared/default client.
- * Returns a promise that resolves once probe results are stored in cachedFeatures.
- * In PP mode (when btpConfig is available for per-user client creation), auth failures
- * (401/403) on textSearch are treated as "unknown" so the tool schema doesn't hide
- * source_code from users who might have authorization. A shared Basic target is the narrow
- * exception: every caller uses the same reviewed SAP identity, so authorization-limited
- * evidence is definitive for that credential generation and may be cached.
+ * Probe through the selected client and retain conclusive backend facts per target.
+ * PP authorization-limited fields remain unknown; unrelated successful evidence survives.
+ * Shared Basic targets may retain permissions for their one credential generation.
  */
 export async function probeClientFeatures(
   config: ServerConfig,
@@ -461,30 +459,15 @@ export async function probeClientFeatures(
   fc.ui5repo = config.featureUi5Repo as 'auto' | 'on' | 'off';
   fc.flp = config.featureFlp as 'auto' | 'on' | 'off';
   const features = await probeFeatures(client.http, fc, config.systemType);
-  if (
-    !cacheAuthorizationLimitedEvidence &&
-    config.ppEnabled &&
-    btpConfig &&
-    features.textSearch &&
-    !features.textSearch.available
-  ) {
-    const reason = features.textSearch.reason ?? '';
-    if (reason.includes('authorization') || reason.includes('401') || reason.includes('403')) {
-      features.textSearch = undefined;
-    }
-  }
-  if (config.targetId && !cacheAuthorizationLimitedEvidence && hasAuthorizationLimitedFeatureEvidence(features)) {
-    throw new Error(
-      'Multi-target feature evidence remains unknown because one or more probes were authorization-limited.',
-    );
-  }
   // Log authorization probe results
   if (features.authProbe) {
     const ap = features.authProbe;
     if (ap.searchAccess) {
       logger.info('Authorization probe: object search access is available');
     } else {
-      logger.warn(`Authorization probe: object search access denied — ${ap.searchReason ?? 'unknown reason'}`);
+      logger.warn(
+        `Authorization probe: object search access is not confirmed — ${ap.searchReason ?? 'unknown reason'}`,
+      );
     }
     if (ap.transportAccess) {
       logger.info('Authorization probe: transport access is available');
@@ -493,7 +476,7 @@ export async function probeClientFeatures(
     }
   }
   const featureKey = config.targetId ?? config.destinationName;
-  setCachedFeatures(features, featureKey);
+  cacheProbedFeatures(features, config.ppEnabled && !!btpConfig && !cacheAuthorizationLimitedEvidence, featureKey);
   // Proactive warning: on SAP_BASIS < 7.51 the ADT REST handler does not honor the
   // stateful-session header over HTTP, so object writes fail with 423 "invalid lock
   // handle" until the abapfs_extensions enhancement is installed. Warn at startup —
@@ -507,7 +490,7 @@ export async function probeClientFeatures(
         'installed and you can ignore this. See docs/sap-trial-setup.md (423 troubleshooting).',
     );
   }
-  const discoveryMap = features.discoveryMap ?? new Map();
+  const discoveryMap = getCachedFeatures(featureKey)?.discoveryMap ?? new Map();
   setCachedDiscovery(discoveryMap, featureKey);
   // Direct calls immediately reuse the probed client, so install its evidence too.
   client.http.setDiscoveryMap(discoveryMap);
@@ -867,7 +850,7 @@ export function createServer(config: ServerConfig, options: CreateServerOptions 
           const cacheAuthorizationLimitedEvidence = selectedTarget?.authentication === 'BasicAuthentication';
           await ensureMultiTargetFeatureProbe(
             targetKey,
-            !!targetKey && !!getCachedFeatures(targetKey),
+            !!targetKey && hasCompletedFeatureProbe(targetKey),
             () => probeClientFeatures(activeConfig, resolvedClient, btpConfig, cacheAuthorizationLimitedEvidence),
             () => setCachedFeatures(undefined, targetKey),
           );

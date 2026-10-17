@@ -488,7 +488,7 @@ destination per target is sufficient for v1. PP is recommended because it retain
 identity. Basic is explicitly shared: every scoped XSUAA user reaches SAP as the destination's
 technical user, so human attribution requires ARC-1 audit correlation. No target uses a technical
 startup probe; the first authorized call may pay feature-probe/canary latency, and feature
-availability must never be inferred from an unauthorized user's response.
+availability must never be inferred from an unauthorized user's response. Retain conclusive backend facts per target; omit authorization-limited fields rather than discarding the entire probe. Unknown fields must not hide tools, and per-user authorization results remain request-local.
 
 ## Endpoint Contract
 

@@ -37,9 +37,9 @@ remain independent. See [Deployment](deployment.md) if ARC-1 is not installed ye
 The action is visible while
 capability discovery is still unknown, so clients that only list tools once can use it. A known
 unsupported endpoint/MIME hides it. tools/list never waits on SAP; invocation always checks the
-exact capability before object access and performs bounded discovery when necessary. A shared-client
-`SAPManage(action="probe")` can refresh failed/stale discovery; per-user probes do not replace the
-shared capability cache.
+exact capability before object access and performs bounded discovery when necessary. On single-target
+instances, `SAPManage(action="probe")` refreshes safe capability/discovery facts even through a per-user
+client; that user's authorization failures are not shared. Multi-target instances require a restart to refresh known capabilities.
 Successful shared-client fallback discovery is parsed once and retained in the existing in-memory,
 destination-scoped capability cache. Later calls reuse these hints, but still read root metadata
 and relationships live as the caller. Per-user fallback discovery stays request-local: it never

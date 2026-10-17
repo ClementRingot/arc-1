@@ -391,7 +391,7 @@ const CDS_RESERVED_KEYWORDS = new Set([
 export function guardCdsSyntax(
   type: string,
   source: string,
-  features: ResolvedFeatures | undefined,
+  features: Pick<ResolvedFeatures, 'systemType' | 'abapRelease'> | undefined,
 ): ReturnType<typeof errorResult> | undefined {
   if (type !== 'DDLS' || !source) return undefined;
 
