@@ -280,7 +280,7 @@ describe('E2E SAPTransport Tests', () => {
       }
     });
 
-    it('reassign action changes transport owner', async (ctx) => {
+    it('reassign action accepts the same transport owner', async (ctx) => {
       if (!transportsEnabled) return skipTest(ctx, 'Transport writes not enabled on MCP server');
 
       let id = '';
@@ -298,6 +298,7 @@ describe('E2E SAPTransport Tests', () => {
         // Get current owner
         const getResult = await callTool(client, 'SAPTransport', { action: 'get', id });
         const transport = JSON.parse(expectToolSuccess(getResult));
+        expect(transport.owner).toBeTruthy();
 
         // Reassign to same user (safe)
         const reassignResult = await callTool(client, 'SAPTransport', {
@@ -307,6 +308,8 @@ describe('E2E SAPTransport Tests', () => {
         });
         const reassignText = expectToolSuccess(reassignResult);
         expect(reassignText).toContain('Reassigned transport');
+        const updated = await callTool(client, 'SAPTransport', { action: 'get', id });
+        expect(JSON.parse(expectToolSuccess(updated)).owner).toBe(transport.owner);
       } finally {
         if (id) {
           const deleteResult = await callTool(client, 'SAPTransport', { action: 'delete', id, recursive: true });

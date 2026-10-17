@@ -40,7 +40,7 @@ import {
 import { handleToolCall } from '../../src/handlers/dispatch.js';
 import { DEFAULT_CONFIG } from '../../src/server/types.js';
 import { expectSapFailureClass } from '../helpers/expected-error.js';
-import { requireOrSkip, SkipReason, skipTest } from '../helpers/skip-policy.js';
+import { requireOrSkip, SkipReason } from '../helpers/skip-policy.js';
 import { buildCreateXml, generateUniqueName } from './crud-harness.js';
 import { requireSapCredentials } from './helpers.js';
 
@@ -73,15 +73,6 @@ function getTransportEnabledClient(): AdtClient {
     insecure,
     safety,
   });
-}
-
-/** Check if an error indicates the backend doesn't support this CTS operation */
-function isUnsupportedBackend(err: unknown): boolean {
-  if (err instanceof AdtApiError) {
-    // 400/405/501 typically indicate the operation isn't supported on this system
-    return [400, 405, 501].includes(err.statusCode);
-  }
-  return false;
 }
 
 describe('Transport Integration Tests', () => {
@@ -473,13 +464,14 @@ describe('Transport Integration Tests', () => {
   // ─── reassignTransport ────────────────────────────────────────
 
   describe('reassignTransport', () => {
-    it('reassigns a transport to same user', async (ctx) => {
+    it('reassigns a transport to same user', async () => {
       let id = '';
       try {
         id = trackTransport(await createTransport(client.http, client.safety, `ARC-1 IT reassign ${Date.now()}`));
         expect(id).toBeTruthy();
 
         const transport = await getTransport(client.http, client.safety, id);
+        expect(transport?.owner).toBeTruthy();
         const currentOwner = transport!.owner;
 
         // Reassign to same user (safe — we know the user exists)
@@ -487,19 +479,6 @@ describe('Transport Integration Tests', () => {
 
         const updated = await getTransport(client.http, client.safety, id);
         expect(updated!.owner).toBe(currentOwner);
-      } catch (err) {
-        // NW 7.5x ADT_TM gap: PUT body attributes are silently dropped, so
-        // tm:targetuser arrives empty and SAP responds 400 "User  does not
-        // exist in the system (or locked)" (note the double space — empty
-        // interpolation). NW 7.5x accepts the same operation as URL-query
-        // params, but S/4HANA needs the body — incompatible without
-        // release-aware fallback. Tracked separately from PR #228.
-        if (isUnsupportedBackend(err))
-          return skipTest(
-            ctx,
-            'NW 7.5x ADT_TM gap: reassign requires URL-query params on that release; needs release-aware fallback',
-          );
-        throw err;
       } finally {
         if (id) {
           await deleteTrackedTransport(id);

@@ -1140,9 +1140,9 @@ async function reassignSingle(http: AdtHttpClient, transportId: string, newOwner
  tm:number="${escapeXmlAttr(transportId)}"
  tm:targetuser="${escapeXmlAttr(newOwner)}"
  tm:useraction="changeowner"/>`;
-
+  // NW 7.50 reads the owner from the query; newer CTS handlers read the XML body.
   await http.put(
-    `/sap/bc/adt/cts/transportrequests/${encodeURIComponent(transportId)}`,
+    `/sap/bc/adt/cts/transportrequests/${encodeURIComponent(transportId)}?targetuser=${encodeURIComponent(newOwner)}`,
     body,
     CTS_CONTENT_TYPE_ORGANIZER,
     { Accept: CTS_CONTENT_TYPE_ORGANIZER },
