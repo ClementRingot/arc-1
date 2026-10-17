@@ -1488,6 +1488,9 @@ from ABAP `TEXT_ELEMENTS`, message-class texts, and form layouts. See the
 
 ### Freestyle SQL behavior
 
+To save queries as a native SAP VS Code notebook, use the
+[notebook authoring guide and example](sql-notebook-authoring.md).
+
 For freestyle SQL, when `SAP_BLOCKED_DATA_SOURCES` is non-empty, SAPQuery is restricted to one statically provable
 `SELECT`/`WITH`. ARC-1 extracts every join/union/subquery/CTE source and checks live CDS plus DDIC
 replacement lineage before sending the query, authorizing the whole request once even when IN-list
@@ -1523,6 +1526,11 @@ selected columns, or a restrictive, non-overlapping key-range `WHERE` clause.
 - ABAP SQL aggregate rule applies: non-aggregated selected fields must be listed in `GROUP BY`
 
 JOINs, aggregates, and subqueries are supported. For a plain projection `SELECT`, ARC-1 automatically chunks the longest literal `IN (...)` list—even when the query has several `IN` clauses—and merges the rows. Queries with `ORDER BY`, `GROUP BY`, `HAVING`, `DISTINCT`, `UNION`, or aggregates are sent whole because concatenating per-chunk results would change their semantics. If a backend rejects a long list in one of those queries, split the list manually, union the results, and re-sort client-side when needed.
+
+`rowsReturned` counts output rows; SAP's `totalRows` can count matching input records.
+Observed on SAP_BASIS 758: a scalar `COUNT` returns one row even when `totalRows=0`;
+read the count from its result column. Cell values remain strings, including padding and leading zeros.
+Do not infer aggregate completeness by comparing these two metadata counts.
 
 See: [SAPQuery Freestyle Capability Matrix](https://github.com/arc-mcp/arc-1/blob/main/docs/research/2026-04-21-sapquery-freestyle-capability-matrix.md)
 
