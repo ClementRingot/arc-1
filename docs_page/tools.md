@@ -344,7 +344,7 @@ Search for ABAP objects by name pattern, exact object-directory names, or ABAP s
 | `source` | string | No | For `tadir_lookup` only: `adt` (default), `db`, or `both`. `db`/`both` require the `sql` scope and `SAP_ALLOW_FREE_SQL=true`. See [TADIR lookup `source` modes](#tadir-lookup-source-modes) below. |
 | `packageName` | string | No | For `source_code` search: filter by package |
 
-**Returns:** Object type, name, package, and description for each match. `tadir_lookup` groups exact matches by requested name and includes a `missing` list. Source code search also returns line numbers and code snippets. When `source='both'` reveals divergence between the ADT and DB views, the response adds a `splitBrain: [name, ...]` array and a `warnings: [...]` array explaining each diverging name.
+**Returns:** Object type, name, package, and description for each match. Legacy type labels such as ` (Class)` are removed from names only when the ADT object URI confirms the identity. `tadir_lookup` groups exact matches by requested name and includes a `missing` list. Source code search also returns line numbers and code snippets. When `source='both'` reveals divergence between the ADT and DB views, the response adds a `splitBrain: [name, ...]` array and a `warnings: [...]` array explaining each diverging name.
 
 Source search support is learned per SAP target. A confirmed disabled backend returns object-search guidance; user authorization failures do not disable it for other users. After Basis enables source search, run `SAPManage(action="probe")` or restart ARC-1.
 

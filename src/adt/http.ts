@@ -26,7 +26,7 @@ import {
   withoutResponseBudget,
 } from './http-deadline.js';
 import { prepareDataPreviewWireBody } from './http-wire-body.js';
-import { legacyContentHandlerFallback } from './legacy-content-handler.js';
+import { legacyContentHandlerFallback, rejectEmptyAdtHtmlResponse } from './legacy-content-handler.js';
 import { fetchWithAttemptBudget } from './request-attempt-budget.js';
 import type { Semaphore } from './semaphore.js';
 import { resolveSapUserAgent } from './user-agent.js';
@@ -413,6 +413,7 @@ export class AdtHttpClient {
     options?: AdtRequestOptions,
   ): Promise<AdtResponse> {
     throwIfRequestCancelled(options);
+    const expectBody = method !== 'HEAD';
     // Auto-fetch CSRF token for modifying requests
     if (isModifyingMethod(method) && !this.csrfToken) {
       await this.fetchCsrfToken(withoutResponseBudget(options));
@@ -573,7 +574,7 @@ export class AdtHttpClient {
           const retryResp = await this.doFetch(url, method, headers, wireBody, options);
           const retryBody = await retryResp.text();
           this.storeCookies(retryResp);
-          const retryResult = this.handleResponse(retryResp.status, retryResp.headers, retryBody, path);
+          const retryResult = this.handleResponse(retryResp.status, retryResp.headers, retryBody, path, expectBody);
 
           logger.emitAudit({
             timestamp: new Date().toISOString(),
@@ -628,7 +629,7 @@ export class AdtHttpClient {
           errorBody: `503 retry completed (${retryResp.status})`,
         });
 
-        return this.handleResponse(retryResp.status, retryResp.headers, retryBody, path);
+        return this.handleResponse(retryResp.status, retryResp.headers, retryBody, path, expectBody);
       }
 
       // Handle 429 Too Many Requests — emitted by SAP Web Dispatcher, BTP API
@@ -668,7 +669,7 @@ export class AdtHttpClient {
           errorBody: `429 retry completed (${retryResp.status})`,
         });
 
-        return this.handleResponse(retryResp.status, retryResp.headers, retryBody, path);
+        return this.handleResponse(retryResp.status, retryResp.headers, retryBody, path, expectBody);
       }
 
       // Handle 401 session timeout — reset session and retry once.
@@ -757,22 +758,10 @@ export class AdtHttpClient {
         if (csrfRefreshedCookieHeader) {
           headers.Cookie = csrfRefreshedCookieHeader;
         }
-        const retryResponse = await this.doFetch(url, method, headers, wireBody, options);
-        const retryBody = await retryResponse.text();
-        this.storeCookies(retryResponse);
-        const result = this.handleResponse(retryResponse.status, retryResponse.headers, retryBody, path);
-
-        logger.emitAudit({
-          timestamp: new Date().toISOString(),
-          level: 'info',
-          event: 'http_request',
-          method,
-          path,
-          statusCode: retryResponse.status,
-          durationMs: Date.now() - httpStart,
-        });
-
-        return result;
+        response = await this.doFetch(url, method, headers, wireBody, options);
+        responseBody = await response.text();
+        this.storeCookies(response);
+        // A refreshed session can still need legacy content negotiation below (#996).
       }
 
       // Retry negotiation once, including the narrowly matched NW 7.40 handler error.
@@ -838,7 +827,7 @@ export class AdtHttpClient {
             this.csrfToken = retryToken;
           }
 
-          const retryResult = this.handleResponse(retryResp.status, retryResp.headers, retryBody, path);
+          const retryResult = this.handleResponse(retryResp.status, retryResp.headers, retryBody, path, expectBody);
 
           const currentContentType = contentType ?? headers['Content-Type'];
           const negotiated: { accept?: string; contentType?: string } = {};
@@ -875,7 +864,7 @@ export class AdtHttpClient {
         this.csrfToken = responseToken;
       }
 
-      const result = this.handleResponse(response.status, response.headers, responseBody, path);
+      const result = this.handleResponse(response.status, response.headers, responseBody, path, expectBody);
 
       logger.emitAudit({
         timestamp: new Date().toISOString(),
@@ -968,7 +957,7 @@ export class AdtHttpClient {
   }
 
   /** Handle response: throw on error status, return normalized response */
-  private handleResponse(status: number, headers: Headers, body: string, path: string): AdtResponse {
+  private handleResponse(status: number, headers: Headers, body: string, path: string, expectBody = true): AdtResponse {
     const contentType = headers.get('content-type')?.toLowerCase();
     const isDiscovery = ['/sap/bc/adt/core/discovery', '/sap/bc/adt/discovery'].includes(path.split('?', 1)[0]!);
     if (
@@ -988,6 +977,8 @@ export class AdtHttpClient {
         body.slice(0, 500),
       );
     }
+
+    if (expectBody) rejectEmptyAdtHtmlResponse(status, contentType, body, path);
 
     if (status >= 400) {
       if (status === 401) {
@@ -1079,8 +1070,8 @@ export class AdtHttpClient {
         hasContext: /(?:^|;\s*)sap-contextid=/.test(cookieHeader ?? ''),
       });
       if (method === 'GET' && response.status === 200 && !usableToken(response)) {
-        // Preserve the login-page check even when an old handler reports HTTP 200.
-        this.handleResponse(response.status, response.headers, await response.text(), path);
+        // Check login pages, but preserve the header-only legacy discovery fallback.
+        this.handleResponse(response.status, response.headers, await response.text(), path, false);
       }
       // Only headers are needed; release GET bodies before a fallback or return.
       if (!response.bodyUsed) await response.body?.cancel();

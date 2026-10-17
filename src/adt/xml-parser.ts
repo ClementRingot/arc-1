@@ -147,11 +147,23 @@ export function parseSearchResults(xml: string): AdtSearchResult[] {
   const refs = getNestedArray(parsed, 'objectReferences', 'objectReference');
   return refs.map((ref: Record<string, unknown>) => ({
     objectType: String(ref['@_type'] ?? ''),
-    objectName: String(ref['@_name'] ?? ''),
+    objectName: canonicalSearchName(String(ref['@_name'] ?? ''), String(ref['@_uri'] ?? '')),
     description: String(ref['@_description'] ?? ''),
     packageName: String(ref['@_packageName'] ?? ''),
     uri: String(ref['@_uri'] ?? ''),
   }));
+}
+
+/** Legacy quickSearch decorates names with localized type labels; require URI identity proof. */
+function canonicalSearchName(displayName: string, uri: string): string {
+  const name = /^([^\s()]+) \([^()]+\)$/.exec(displayName)?.[1];
+  if (!name) return displayName;
+  const segment = /^\/sap\/bc\/adt\/(?:[^/?#]+\/)*([^/?#]+)$/i.exec(uri)?.[1];
+  try {
+    return segment && decodeURIComponent(segment).toUpperCase() === name.toUpperCase() ? name : displayName;
+  } catch {
+    return displayName;
+  }
 }
 
 /**

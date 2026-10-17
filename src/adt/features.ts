@@ -116,6 +116,12 @@ export async function probeFeatures(
           return classifyFeatureProbeStatus(probe.id, 200);
         } catch (err) {
           if (err instanceof AdtApiError) {
+            if (err.statusCode < 400)
+              return {
+                id: probe.id,
+                available: false,
+                reason: 'cannot determine availability from an invalid ADT response',
+              };
             return classifyFeatureProbeStatus(probe.id, err.statusCode);
           }
           // Network-level error (no AdtApiError) → cannot reach SAP at all → unavailable.
