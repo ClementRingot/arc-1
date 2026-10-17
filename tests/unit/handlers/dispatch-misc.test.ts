@@ -675,20 +675,24 @@ describe('tool dispatch & cross-cutting handler behavior', () => {
       }
     });
 
-    it('404 error includes SAPSearch hint', async () => {
-      mockFetch.mockReset();
-      // Make the mock reject with a 404 AdtApiError
-      mockFetch.mockRejectedValueOnce(
-        new AdtApiError('Not found', 404, '/sap/bc/adt/programs/programs/ZNONEXIST/source/main'),
-      );
-      const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPRead', {
-        type: 'PROG',
-        name: 'ZNONEXIST',
-      });
-      expect(result.isError).toBe(true);
-      expect(result.content[0]?.text).toContain('SAPSearch');
-      expect(result.content[0]?.text).toContain('ZNONEXIST');
-    });
+    it.each(['Not found', 'ZNONEXIST does not have any inactive version'])(
+      'program 404 retains the SAPSearch hint: %s',
+      async (message) => {
+        mockFetch.mockReset();
+        // Make the mock reject with a 404 AdtApiError
+        mockFetch.mockRejectedValueOnce(
+          new AdtApiError(message, 404, '/sap/bc/adt/programs/programs/ZNONEXIST/source/main', message),
+        );
+        const result = await handleToolCall(createClient(), DEFAULT_CONFIG, 'SAPRead', {
+          type: 'PROG',
+          name: 'ZNONEXIST',
+        });
+        expect(result.isError).toBe(true);
+        expect(result.content[0]?.text).toContain('SAPSearch');
+        expect(result.content[0]?.text).toContain('ZNONEXIST');
+        expect(result.content[0]?.text).not.toContain('testclasses');
+      },
+    );
 
     it('401 error includes client hint', async () => {
       mockFetch.mockReset();

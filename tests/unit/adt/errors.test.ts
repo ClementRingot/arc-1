@@ -735,14 +735,31 @@ describe('AdtApiError', () => {
       expect(classification?.transaction).toBe('SICF');
     });
 
-    it('classifies the CCAU "does not have any inactive version" 500 as include-not-initialized', () => {
+    it.each([
+      '/sap/bc/adt/oo/classes/ZCL_X/includes/testclasses',
+      '/sap/bc/adt/oo/classes/%2FACME%2FCL_X/includes/testclasses?lockHandle=TEST',
+    ])('classifies an uninitialized CCAU save at %s', (path) => {
       const xml =
         '<exc:exception xmlns:exc="http://www.sap.com/abapxml/types/communicationframework"><type id="ExceptionResourceSaveFailure"/><message lang="EN">ZCL_X==============CCAU does not have any inactive version</message></exc:exception>';
-      const classification = classifySapDomainError(500, xml);
+      const classification = classifySapDomainError(500, xml, path);
       expect(classification?.category).toBe('include-not-initialized');
       expect(classification?.hint).toMatch(/testclasses|auto-creates/i);
       // Must NOT be mis-classified as activation-dependency (that branch also matches /inactive/).
       expect(classification?.category).not.toBe('activation-dependency');
+    });
+
+    it.each([
+      [404, '/sap/bc/adt/programs/programs/ZNONEXIST/source/main?version=active', 'ExceptionResourceNotFound'],
+      [500, '/sap/bc/adt/programs/programs/ZNONEXIST/source/main', 'ExceptionResourceSaveFailure'],
+      [500, '/sap/bc/adt/oo/classes/ZCL_X/source/main', 'ExceptionResourceSaveFailure'],
+      [500, '/sap/bc/adt/oo/classes/ZCL_X/includes/definitions', 'ExceptionResourceSaveFailure'],
+      [500, '/sap/bc/adt/oo/classes/ZCL_X/includes/testclasses/versions', 'ExceptionResourceSaveFailure'],
+      [404, '/sap/bc/adt/oo/classes/ZCL_X/includes/testclasses', 'ExceptionResourceNotFound'],
+      [500, '/sap/bc/adt/oo/classes/ZCL_X/includes/testclasses', 'ExceptionInternalError'],
+      [500, undefined, 'ExceptionResourceSaveFailure'],
+    ])('does not give CCAU creation advice for %s %s (%s)', (status, path, type) => {
+      const xml = `<exc:exception><type id="${type}"/><message>ZNONEXIST does not have any inactive version</message></exc:exception>`;
+      expect(classifySapDomainError(status, xml, path)?.category).not.toBe('include-not-initialized');
     });
 
     it('does NOT classify an unrelated 500 as include-not-initialized', () => {

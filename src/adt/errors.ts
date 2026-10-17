@@ -613,14 +613,14 @@ export function classifySapDomainError(
   const bodyLower = bodyRaw.toLowerCase();
   const typeId = extractExceptionType(bodyRaw);
 
-  // Un-initialised class-local include (issue #303 follow-up). A content PUT to a
-  // class include that doesn't exist yet (notably testclasses/CCAU on a fresh class)
-  // fails with HTTP 500 ExceptionResourceSaveFailure + "…CCAU does not have any
-  // inactive version". Checked BEFORE the activation-dependency branch below, which
-  // also matches /inactive/. ARC-1's update include= path now auto-creates the
-  // include before writing, so this hint covers only paths that bypass auto-init
-  // (e.g. a direct source PUT to an un-initialised include).
-  if (/does not have any inactive version/i.test(bodyRaw)) {
+  // A direct save to an uninitialized CCAU include fails with this error (#303).
+  // NW 7.50 uses the same message for missing programs, which need the normal not-found hint.
+  if (
+    statusCode === 500 &&
+    typeId === 'ExceptionResourceSaveFailure' &&
+    /^\/sap\/bc\/adt\/oo\/classes\/[^/?]+\/includes\/testclasses(?:\?|$)/i.test(path ?? '') &&
+    /does not have any inactive version/i.test(bodyRaw)
+  ) {
     return {
       category: 'include-not-initialized',
       hint: 'This class-local include is not initialised yet (a fresh class has no testclasses/CCAU include until first write). Write to it via SAPWrite(action="update", type="CLAS", include="testclasses", source=…) — ARC-1 auto-creates the include before writing.',
