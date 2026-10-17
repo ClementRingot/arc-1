@@ -25,6 +25,9 @@ Distributed as npm package (`arc-1`) and Docker image (`ghcr.io/arc-mcp/arc-1`).
    explicit pinned/aggregate targets under its mutation-free safety contract. ADR-0007 permits the
    default-off shared Basic identity only under its one-instance/lockout controls. Do not broaden
    either exception to writes or another discovery/auth model without a new ADR/security review.
+8. **ABAP execution and RFC belong in extensions** — no built-in report/class execution, direct RFC,
+   or installed/temporary ABAP helpers. Core uses existing SAP APIs and TypeScript; user ABAP
+   development and dedicated ATC/Unit workflows retain their gates. See [ADR-0009](docs/adr/0009-abap-execution-and-rfc-belong-in-extensions.md).
 
 ## Roadmap Discipline
 

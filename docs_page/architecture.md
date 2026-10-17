@@ -13,6 +13,7 @@ see [Authorization & Roles](authorization.md).
 | Area | Current architecture |
 | ---- | -------------------- |
 | Runtime | TypeScript MCP server on Node.js 22.19+, distributed as npm package and Docker image. |
+| Core implementation | Existing SAP APIs plus TypeScript; no built-in report/class execution, direct RFC, or custom ABAP helpers. Those capabilities belong in extensions. User ABAP development and dedicated ATC/Unit workflows remain supported. See [ADR-0009](https://github.com/arc-mcp/arc-1/blob/main/docs/adr/0009-abap-execution-and-rfc-belong-in-extensions.md). |
 | MCP transports | `stdio` for local clients and `http-streamable` for hosted/server deployments. |
 | Tool surface | Standard mode exposes 12 intent-based tools. Hyperfocused mode exposes one `SAP` tool. |
 | SAP access | ADT REST APIs under `/sap/bc/adt/*`, plus selected OData/utility endpoints for UI5, Git, FLP, and diagnostics. |
