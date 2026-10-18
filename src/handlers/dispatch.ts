@@ -194,6 +194,9 @@ function buildBaseErrorMessage(
     }
     return `${detail}\nCreate completion is unconfirmed. ${inspection} Do not blindly repeat create.`;
   }
+  if (err instanceof AdtResponseLimitError && ['where-used', 'where-used snippets'].includes(err.endpointFamily)) {
+    return `${message} Narrow with packages where native scope is supported, a cursor, or a smaller root. maxResults does not reduce SAP's native response size. This is an analysis limit, not a connectivity failure.`;
+  }
   if (err instanceof AdtResponseLimitError && err.endpointFamily === 'repository-relations') {
     return `${message} Reduce depth or choose a smaller root. maxResults does not reduce SAP's native response size. This is an analysis limit, not a connectivity failure.`;
   }

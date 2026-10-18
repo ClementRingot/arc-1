@@ -1011,8 +1011,8 @@ export function getToolDefinitions(
   tools.push({
     name: 'SAPNavigate',
     description: btp
-      ? 'Navigate code (BTP ABAP Environment): definitions, references, completion, hierarchy. references: scope-based where-used with lines/snippets/package; objectType filters results (e.g. CLAS/OC); type+name replaces uri. Scope = released SAP + custom Z/Y. hierarchy queries SEOMETAREL: requires data/SQL opt-in + matching scope; otherwise inspect class MAIN with SAPRead. CDS (DDLS) impact: SAPContext(action="impact") classifies where-used into RAP buckets.'
-      : 'Navigate code: definitions, references, completion, hierarchy. references: scope-based where-used with lines/snippets/package; objectType filters results (e.g. CLAS/OC, PROG/P); type+name replaces uri. hierarchy queries SEOMETAREL for superclass/interfaces/direct subclasses: requires data/SQL opt-in + matching scope; otherwise inspect class MAIN with SAPRead. CDS (DDLS) impact: SAPContext(action="impact") classifies where-used into RAP buckets.',
+      ? 'Navigate code (BTP ABAP Environment): definitions, references, completion, hierarchy. references: where-used objects by default; detail=positions/snippets adds bounded native usages; objectType filters results (e.g. CLAS/OC); type+name replaces uri. Scope = released SAP + custom Z/Y. hierarchy queries SEOMETAREL: requires data/SQL opt-in + matching scope; otherwise inspect class MAIN with SAPRead. CDS (DDLS) impact: SAPContext(action="impact") classifies where-used into RAP buckets.'
+      : 'Navigate code: definitions, references, completion, hierarchy. references: where-used objects by default; detail=positions/snippets adds bounded native usages; objectType filters results (e.g. CLAS/OC, PROG/P); type+name replaces uri. hierarchy queries SEOMETAREL for superclass/interfaces/direct subclasses: requires data/SQL opt-in + matching scope; otherwise inspect class MAIN with SAPRead. CDS (DDLS) impact: SAPContext(action="impact") classifies where-used into RAP buckets.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1035,6 +1035,20 @@ export function getToolDefinitions(
           type: 'string',
           description:
             'references RESULT filter, not the root type: CLAS/OC, PROG/P, FUGR/FF. Omit for all consumer types. A bare prefix ("CLAS") matches every subtype.',
+        },
+        packages: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 20,
+          items: { type: 'string', maxLength: 30 },
+          description:
+            'references: exact package names (e.g. ["$TMP"]); no wildcards or implicit subpackages. Native scope when available, otherwise local filtering.',
+        },
+        detail: {
+          type: 'string',
+          enum: ['objects', 'positions', 'snippets'],
+          description:
+            'references: objects (default), or expand at most 10 native nodes for positions/snippets. Method positions can be component-relative; inspect usageDetails limits.',
         },
         maxResults: {
           type: 'number',

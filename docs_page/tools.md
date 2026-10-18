@@ -1321,7 +1321,9 @@ The existing actions below are unchanged.
 | `uri` | string | No | Source URI of the object. Optional for `references` if `type`+`name` are provided. |
 | `type` | string | No | Object type (PROG, CLAS, INTF, FUNC, etc.) — alternative to `uri` for `references`. |
 | `name` | string | No | Object name — alternative to `uri` for `references`. |
-| `objectType` | string | No | For `references`: keep only results of this ADT type, slash format (`CLAS/OC`, `PROG/P`, `FUGR/FF`). A bare prefix (`CLAS`) matches every subtype. Applied client-side. |
+| `objectType` | string | No | For `references`: keep only results of this ADT type, slash format (`CLAS/OC`, `PROG/P`, `FUGR/FF`). A bare prefix (`CLAS`) matches every subtype. Always filtered locally. |
+| `packages` | string[] | No | For `references`: 1–20 exact package names, e.g. `["$TMP"]`. No wildcards or implicit subpackages. |
+| `detail` | string | No | For `references`: `objects` (default), `positions`, or `snippets`. Details expand at most 10 native nodes. |
 | `maxResults` | number | No | For `references`: max entries (default 100, max 1000). `total` counts every match of the filter. |
 | `line` | number | No | Line number (1-based). For `references`, together with `column`: search the symbol at that position. |
 | `column` | number | No | ADT cursor column (0-based integer) |
@@ -1347,9 +1349,9 @@ For `relations`, use only `action`, `type`, `name` and its four optional paramet
 navigation parameters (`uri`, `objectType`, `line`, `column`, `source`) are rejected. See the
 [experimental guide](live-relations.md) for coverage limits and examples.
 
-**References action (Where-Used):** Uses the full scope-based Where-Used API, returning detailed results with package info. Falls back to the simpler reference lookup on older SAP systems that don't support the scope endpoint.
+**References action (Where-Used):** Uses SAP's Where-Used API and returns reference entries with package info. Ordinary lookups fall back to the simpler reference API when the main endpoint is unavailable. A missing native scope endpoint alone does not require that fallback.
 
-Returns a paged envelope — `{total, countMeaning, shown, truncated, hint?, searchedFor?, warning?, references}` — because where-used is
+Returns a paged envelope — `{total, countMeaning, shown, truncated, hint?, searchedFor?, warning?, scopeFiltering?, usageDetails?, references}` — because where-used is
 unbounded: `CL_ABAP_TYPEDESCR` has 6,644 references (~968K tokens, several times a context window).
 **`total` counts matching reference entries before paging, not distinct consumer objects or runtime
 calls.** The `countMeaning` field states this explicitly. Tree/container rows and multiple references
@@ -1357,17 +1359,34 @@ to one object can appear; even an untruncated or empty page is not proof of syst
 If optional interface-implementer enrichment fails, native results are retained with a `warning`.
 An absent warning does not prove that enrichment ran or that the result is complete.
 
-Paging and `objectType` filtering are both client-side, and deliberately so: SAP's
-`usageReferences` endpoint declares only `{?uri}` and ignores every limit or filter we can send
-(verified live across nine request variants, all byte-identical). The full set therefore still
-crosses the wire — this bounds what reaches the model, not what SAP computes.
+`packages` uses native scope when discovery advertises it (verified on 2025 and BTP).
+Otherwise package filtering is local and the full native result still crosses the wire.
+`scopeFiltering` reports `server` or `client` for package-filtered requests. `objectType` filtering
+and paging always happen locally; object-type-only lookups keep the existing request path.
+Package filters exclude package container rows. Optional interface-implementer enrichment is
+skipped with a warning because that lookup provides no package names.
+
+`detail="positions"` or `"snippets"` adds `usageDetails.usages`: object, component, URI, position
+and SAP's raw `matches` (access/grade). Snippets also include up to 1,000 characters of the code
+line, with `snippetTruncated` when cut. Method positions can be relative to the named component;
+use the URI and component together, rather than treating every line as a full-class source line.
+Snippets come from SAP's working-area source, which can include unactivated edits and differ
+from the indexed source.
+
+Details expand at most 10 native identifiers in one request. `identifiersAvailable`,
+`identifiersExpanded`, `unexpandedEntries`, `shown` and `truncated` expose the limits; entries
+without identifiers remain in the object list but cannot be expanded. `identifiersWithoutUsages`
+counts expanded nodes for which SAP returned no usage entries. `maxResults` caps each
+returned list. The native request sequence has a 30-second deadline, an 8 MiB metadata budget
+and a separate 2 MiB snippet budget. Budget or authorization failures return errors. Missing
+snippet capability is reported explicitly; ARC-1 does not guess usages by scanning source.
 
 Without a position, `references` searches the whole object. With `line` and `column` (both, as ADT
 cursor coordinates: line from 1, column from 0) it searches the symbol at that position in the source
 behind `uri`, for example one method of a class; `type`+`name` positions refer to the main source.
 ARC-1 sends the cursor as the URI fragment `#start=<line>,<column>`, replacing any fragment already in
 `uri`. When the cursor is not on an identifier, SAP silently searches the whole object instead. A
-position search therefore returns `searchedFor`: SAP's result description, verbatim, which names
+search therefore returns `searchedFor` when SAP supplies it: SAP's result description, verbatim, which names
 what was searched, for example `References for: /SCWM/CL_TM - CLEANUP (Method) [SID]` or, after a
 fallback, `References for: /SCWM/CL_TM (Class) [SID]`. The wording differs by release. If SAP omits
 the description (including on the older fallback endpoint), a `warning` says the searched symbol
@@ -1390,6 +1409,7 @@ not enumerate subclasses or prove a complete inheritance/implementation list.
 SAPNavigate(action="definition", uri="/sap/bc/adt/programs/programs/ztest/source/main", line=10, column=5, source="...")
 SAPNavigate(action="references", uri="/sap/bc/adt/oo/classes/zcl_order")
 SAPNavigate(action="references", type="CLAS", name="ZCL_ORDER")
+SAPNavigate(action="references", type="CLAS", name="ZCL_ORDER", packages=["ZORDERS"], detail="snippets")
 SAPNavigate(action="references", type="CLAS", name="ZCL_ORDER", line=12, column=12)
 SAPNavigate(action="references", type="CLAS", name="ZCL_ORDER", objectType="PROG/P")
 SAPNavigate(action="completion", uri="/sap/bc/adt/programs/programs/ztest/source/main", line=10, column=15, source="...")
@@ -1999,7 +2019,8 @@ entries before paging, not distinct objects or runtime calls** (`shown` is the p
 `countMeaning` explains the count; an optional `warning` reports failed interface-implementer
 enrichment without discarding native results. No warning is not proof of complete coverage.
 For class-only results use `SAPNavigate(action="references", objectType="CLAS/OC", type=..., name=...)`;
-`SAPContext.usages` has no result-type filter. Navigation uses `total` and `references` instead of
+`SAPContext.usages` has no result-type filter. Both `usages` and `impact` preserve SAP’s search
+explanation in `searchedFor` when supplied, including unsupported-position explanations. Navigation uses `total` and `references` instead of
 `usageCount` and `usages`. `SAPContext(action="impact")` caps each downstream bucket while `summary`
 keeps the unsliced bucket counts, not a guarantee of every system dependency.
 

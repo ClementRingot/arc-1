@@ -975,6 +975,20 @@ export const SAPNavigateSchema = z
     type: z.string().optional(),
     name: z.string().optional(),
     objectType: z.string().optional(),
+    packages: z
+      .array(
+        z
+          .string()
+          .trim()
+          .toUpperCase()
+          .min(1)
+          .max(30)
+          .regex(/^\$?[A-Z0-9_/]+$/),
+      )
+      .min(1)
+      .max(20)
+      .optional(),
+    detail: z.enum(['objects', 'positions', 'snippets']).optional(),
     maxResults: relationNumber.optional(),
     line: z.coerce.number().optional(),
     column: z.coerce.number().optional(),
@@ -985,6 +999,9 @@ export const SAPNavigateSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
+    if (value.action !== 'references' && (value.packages !== undefined || value.detail !== undefined)) {
+      ctx.addIssue({ code: 'custom', message: 'packages and detail apply only to references.' });
+    }
     if (value.action === 'relations') {
       const checked = LiveRelationsInput.safeParse(value);
       if (!checked.success)
