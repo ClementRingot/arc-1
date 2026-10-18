@@ -821,7 +821,8 @@ This helps pinpoint the exact failing field/annotation instead of retrying blind
 - Delete hints include cycle-break guidance for mutually-dependent projection graphs (strip redirected/composition clauses, activate stripped versions, then delete).
 - If delete guidance lists dependents that were just deleted, treat it as possible stale SAP active dependency/index state and retry after a short wait before deeper cleanup.
 - If SAP reports a delete dependency error but current where-used results are empty, ARC-1 now adds stale active-dependency guidance: wait/retry after recent cleanup, activate restored/stripped sources first, then re-check references/locks.
-- ARC-1 combines unfiltered ADT where-used results with scoped object-type filters where available. This avoids under-reporting dependents on SAP systems that return only a shallow default usageReferences result.
+- CDS hints use one unfiltered ADT where-used request and deduplicate its results.
+- Empty CDS results retain SAP's explanation when supplied; HTTP 200 alone does not prove the search was supported.
 - If the where-used endpoint is unavailable on the backend, ARC-1 keeps the CRUD action behavior unchanged and adds a short "impact unavailable" note instead of failing the call.
 
 **Blue framework package handling:** `TABL` and `BDEF` create calls now pass package in both the XML (`packageRef`) and URL query (`_package=<pkg>`), alongside transport (`corrNr`) when provided.
@@ -1866,7 +1867,7 @@ shortcut is no longer used. See
 
 ### action="structure" — DDIC includes + append structures (TABL only)
 
-Returns a JSON tree for a DDIC structure or transparent table. ARC-1 parses embedded includes from the TABL source (`include <name>;`, named includes, and classic `.INCLUDE`) and resolves append/extension structures through ADT where-used. Append candidates are only returned after ARC-1 reads the candidate source and confirms it contains `extend type <base> with`; `.APPEND` is not parsed from the base source because ADT does not emit append structures there.
+Returns a JSON tree for a DDIC structure or transparent table. ARC-1 parses embedded includes from the TABL source (`include <name>;`, named includes, and classic `.INCLUDE`) and resolves append/extension structures through ADT where-used. Append candidates are only returned after ARC-1 reads the candidate source and confirms it contains `extend type <base> with`; `.APPEND` is not parsed from the base source because ADT does not emit append structures there. A missing where-used endpoint or more than 50 structure candidates leaves the include tree intact and adds an incomplete-discovery warning. Large where-used searches can add latency even when the candidate cap stops source inspection. Results reflect SAP’s current index; an empty result does not prove that no append exists.
 
 **Example:**
 ```json

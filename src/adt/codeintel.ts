@@ -40,18 +40,6 @@ export interface CompletionResult {
   complete: boolean;
 }
 
-/** Available object type from Where-Used scope discovery */
-export interface WhereUsedScopeEntry {
-  objectType: string;
-  objectTypeDescription: string;
-  count: number;
-}
-
-/** Where-Used scope — available object types and their counts */
-export interface WhereUsedScope {
-  entries: WhereUsedScopeEntry[];
-}
-
 /** Detailed Where-Used result with additional fields (line, snippet, package) */
 export interface WhereUsedResult {
   uri: string;
@@ -134,50 +122,6 @@ export async function findReferences(
 }
 
 /**
- * Get available object types for Where-Used analysis (scope discovery).
- *
- * Step 1 of the 2-step scope-based Where-Used API:
- * POST to .../usageReferences/scope with the object URI in the request body.
- * Returns available object types and their reference counts.
- */
-export async function getWhereUsedScope(
-  http: AdtHttpClient,
-  safety: SafetyConfig,
-  objectUrl: string,
-): Promise<WhereUsedScope> {
-  checkOperation(safety, OperationType.Intelligence, 'FindWhereUsed');
-
-  const body = [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<usageReferences:scopeRequest xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences">',
-    `  <usageReferences:objectReference uri="${escapeXmlAttr(objectUrl)}"/>`,
-    '</usageReferences:scopeRequest>',
-  ].join('\n');
-
-  const resp = await http.post(
-    '/sap/bc/adt/repository/informationsystem/usageReferences/scope',
-    body,
-    'application/xml',
-    { Accept: 'application/xml' },
-  );
-
-  const parsed = parseXml(resp.body);
-  const entries: WhereUsedScopeEntry[] = [];
-
-  // Scope response has objectType entries with type, description, and count
-  const scopeNodes = findDeepNodes(parsed, 'objectType');
-  for (const node of scopeNodes) {
-    entries.push({
-      objectType: String(node['@_type'] ?? node['@_name'] ?? ''),
-      objectTypeDescription: String(node['@_description'] ?? ''),
-      count: Number(node['@_count'] ?? node['@_numberOfResults'] ?? 0),
-    });
-  }
-
-  return { entries };
-}
-
-/**
  * Find Where-Used references via the ADT usageReferences endpoint.
  *
  * POST to .../usageReferences with the object URI as both a query parameter
@@ -186,7 +130,7 @@ export async function getWhereUsedScope(
  * - Accept: application/vnd.sap.adt.repository.usagereferences.result.v1+xml
  *
  * The response uses a tree structure with `referencedObject` > `adtObject` elements.
- * If objectType is provided, it's included in the request body as a filter.
+ * The legacy objectType body field is ignored by tested SAP systems; callers must filter results themselves.
  */
 export async function findWhereUsed(
   http: AdtHttpClient,
@@ -200,11 +144,11 @@ export async function findWhereUsed(
 /** Where-used results plus the symbol SAP actually searched for. */
 export interface WhereUsedLookup {
   results: WhereUsedResult[];
-  /** SAP's `resultDescription`, verbatim; absent when SAP omits it. It names the searched symbol, e.g.
+  /** SAP's `resultDescription`, verbatim; absent when SAP omits it. It can name the symbol or explain an unsupported search, e.g.
    *  "References for: /SCWM/CL_TM - CLEANUP (Method) [SID]" (7.57) or
    *  "[A4H] Where-Used List: /DMO/BOOKING_DATA (Structure)" (8.16). */
   searchedFor?: string;
-  /** Exact empty means SAP searched the URI's original object; absent leaves the scope unknown. */
+  /** Empty can mean the original object or an unsupported search; it alone does not prove a search ran. */
   referencedObjectIdentifier?: string;
 }
 

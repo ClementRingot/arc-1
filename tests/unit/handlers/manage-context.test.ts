@@ -1054,14 +1054,6 @@ describe('SAPManage / SAPContext handlers', () => {
         if (urlStr.includes('/sap/bc/adt/core/discovery')) {
           return Promise.resolve(mockResponse(200, '', { 'x-csrf-token': 'T' }));
         }
-        if (method === 'POST' && urlStr.includes('/sap/bc/adt/repository/informationsystem/usageReferences/scope')) {
-          return Promise.resolve(
-            mockResponse(
-              200,
-              '<usageReferences:scopeResponse xmlns:usageReferences="http://www.sap.com/adt/ris/usageReferences"/>',
-            ),
-          );
-        }
         if (method === 'POST' && urlStr.includes('/sap/bc/adt/repository/informationsystem/usageReferences')) {
           return Promise.resolve(
             mockResponse(

@@ -341,8 +341,8 @@ export function normalizeTypeArgsForValidation(
         delete cleaned.depth;
         delete cleaned.expandPackages;
       }
-      // Only normalize `type` (for URL building). `objectType` is passed to SAP's
-      // where-used scope API in slash format (e.g., CLAS/OC) — normalizing it would break the filter.
+      // Only normalize `type` (for URL building). Keep `objectType` in slash format
+      // (e.g., CLAS/OC) for where-used filtering; normalizing it would lose the subtype.
       return {
         ...cleaned,
         type: cleaned.type === undefined ? undefined : normalizeObjectType(String(cleaned.type ?? '')),
