@@ -1,6 +1,6 @@
 # ARC-1 Idea Roadmap
 
-**Last reviewed:** 2026-10-17
+**Last reviewed:** 2026-10-18
 
 This page is ARC-1's idea parking lot. It records worthwhile work that is **not implemented now** so
 it does not disappear, but it is not a delivery schedule and it does not answer "what should we do
@@ -106,6 +106,7 @@ sequence.
 | [FEAT-32](#feat-32) | Stable data-preview pagination | P3 | M | Needs research | Data access |
 | [FEAT-86](#feat-86) | Additional stored-text profiles and persistence | P3 | M | Needs research | Data access |
 | [FEAT-87](#feat-87) | Preserve repeated spaces in general data queries | P2 | S | Needs research | Data access |
+| [FEAT-90](#feat-90) | Historical transport scope beyond source | P2 | M | Needs research | Developer workflow |
 | [FEAT-36](#feat-36) | Type information | P3 | S | Blocked | Code intelligence |
 | [FEAT-79](#feat-79) | DDIC-aware dependency context | P2 | M | Needs research | Code intelligence |
 | [FEAT-42](#feat-42) | Additional CI output formats | P3 | XS | Revisit on trigger | CI |
@@ -553,6 +554,25 @@ live pair in one call on both releases; the integration suite uses it for cleanu
 **Resume with.** Reuse the verified request shape in `deleteObjectSet`
 (`tests/integration/crud-harness.ts`). Enforce the package gate for every object before sending,
 report SAP's per-object `isDeleted` result, gate on discovery, and stop suggesting circular orders.
+
+<a id="feat-90"></a>
+### FEAT-90 — Historical transport scope beyond source
+
+- **Priority / effort / status:** P2 / M / Needs research
+- **Category:** Developer workflow
+
+**Remaining gap.** Source diffs leave Dictionary objects, text pools, function-group sources, metadata,
+deletions and Customizing keys unreviewed. Keep these gaps explicit; current metadata is not
+historical evidence.
+
+**Evidence.** [#1008](https://github.com/arc-mcp/arc-1/pull/1008) narrows the implementation to
+bounded MCP source review. Fresh A4H/001 probes found DOMA/DTEL/TTYP history feeds, but their
+advertised content URIs returned HTTP 403 “Request version … is not supported”, including
+with the exact advertised media types. [Research and family matrix](https://github.com/arc-mcp/arc-1/blob/main/docs/research/2026-10-18-transport-review-mcp.md).
+
+**Resume with.** A real review needs one specific missing family and a read-only probe returns
+two retrievable historical payloads, transport attribution and the native content contract.
+Start with that family; no generic serializer, guessed URL or ABAP/RFC helper fallback.
 
 ## Integration and localization
 

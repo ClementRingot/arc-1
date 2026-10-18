@@ -1551,7 +1551,7 @@ export function getToolDefinitions(
             description:
               "list: show transports (defaults to current user, modifiable only). Pass summary=true for a headers-only overview that omits each transport's object lists (keeps an objectCount) — far cheaper when many transports are open. " +
               'get: fetch transport details including tasks and objects. ' +
-              'diff: what a transport CHANGED — per object, the revision written under it vs the one before, as diff hunks (get only lists names). LIMU entries roll up to their class; an open transport compares to the last released revision. Read baselineStatus first: prior-revision = solid; prior-revision-unverified = pair guessed, may be another change; no-prior-snapshot = created here; baseline-ambiguous = no baseline, so an all-additions block is NOT proof of creation; baseline-unavailable = the read FAILED, never call that unchanged. ' +
+              'diff: source review. Released requests need attributed snapshots; open requests use active source, never drafts. baselineStatus: prior-revision=attributed pair; prior-revision-unverified=unattributed candidate; no-prior-snapshot=missing history, NOT creation; baseline-ambiguous=uncertain predecessor; baseline-unavailable=no comparison, NOT unchanged. Non-source gaps are explicit. Follow nextOffset; pages are not snapshots. ' +
               'create: create a new transport request (description required). To target another system, pass target=<system | system.client | /group/> (the Transportziel / TR_TARGET, e.g. "/TRG/" or "C11"; the group and system.client forms require extended transport control to be active). Otherwise omit target and pass an optional package to let SAP infer the route (defaults to $TMP). The response reports the resolved transport target; an empty target means a LOCAL request (cannot be transported onward). ' +
               'release: release a single transport or task. ' +
               'delete: delete a transport (use recursive=true to delete tasks first; removeLockedObjects=true to strip locked objects that otherwise block deletion with "...contains locked objects"). ' +
@@ -1624,7 +1624,7 @@ export function getToolDefinitions(
           summary: {
             type: 'boolean',
             description:
-              'For list only. DEFAULT true: headers-only — drops each transport\'s (and task\'s) object lists, keeping id/description/owner/status/target + objectCount; use action="get" for one in full. Pass false for full object lists (~5x larger).',
+              'diff: true omits hunks, retaining counts and evidence (same SAP reads). For list, DEFAULT true: headers-only — drops each transport\'s (and task\'s) object lists, keeping id/description/owner/status/target + objectCount; use action="get" for one in full. Pass false for full object lists (~5x larger).',
           },
           maxResults: {
             type: 'number',

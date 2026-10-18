@@ -1548,9 +1548,8 @@ SAPQuery(sql="SELECT * FROM mara WHERE matnr LIKE 'Z%'", maxRows=50)
 
 Manage CTS transport requests (SE09/SE10 equivalent): list, get details, **diff (review what a transport changed)**, create, release, delete, reassign owner, recursive release, check transport requirements, and inspect an object's current lock/assignment status. The legacy action name for that status lookup is `history`, but it is not complete transport history. `create` uses the ADT `CreateCorrectionRequest` endpoint, which works on both NetWeaver 7.50+ and S/4HANA.
 
-In multi-target v1, only the read-only `list`, `get`, `check`, and `history` actions are listed and
-accepted. Transport mutations and topology actions remain structurally unavailable; `diff` is also
-excluded there because it fans out many source reads per call.
+In multi-target v1, `list`, `get`, `diff`, `check`, and `history` are available under the
+selected target's identity and read policy. Transport mutations remain unavailable.
 
 ### `action="diff"` — reviewing what a transport changed
 
@@ -1562,15 +1561,21 @@ Every part carries the evidence behind its diff — read `baselineStatus` before
 
 | `baselineStatus` | Meaning |
 |---|---|
-| `prior-revision` | The diff is what this transport changed. |
+| `prior-revision` | Attributed source-part pair; inspect CTS scope and history completeness before attributing individual hunks. |
 | `prior-revision-unverified` | A predecessor exists, but the "after" side was only guessed — it may belong to another change. |
-| `no-prior-snapshot` | Created in this transport. |
-| `baseline-ambiguous` | No usable baseline. An all-additions block is **not** proof of creation. |
-| `baseline-unavailable` | The read failed. Never report this as unchanged. |
+| `no-prior-snapshot` | No predecessor found; this does **not** prove creation in this transport. |
+| `baseline-ambiguous` | Missing or uncertain baseline chronology. Candidate hunks are **not** proof of creation. |
+| `baseline-unavailable` | No usable comparison: missing matching revision, failed read or work limit. Never report this as unchanged. |
 
-Objects with no source revision feed (domains, data elements, function-group sources, …) are returned
-with an `inventoryReason` instead of parts: they are in scope, just not diffable. Long diffs are
-truncated per part with `diffTruncated: true`; `added`/`removed` still reflect the full change.
+Objects without a verified historical adapter return an `inventoryReason`. Missing class parts
+stay visible; `notCompared` lists non-source scope such as text pools and metadata. Released
+requests use attributed historical snapshots; open requests use active source, never drafts.
+`nextOffset` continues a bounded page. Pages reread SAP and are not an atomic snapshot.
+Long hunks set `diffTruncated` or `hunksOmitted`; failed comparisons have unavailable counts.
+See [Transport reviews](review-workflows.md) for the workflow, object support and limits.
+
+Malformed revision feeds fail explicitly in both transport review and `SAPRead VERSIONS`;
+a valid empty Atom feed still returns empty history.
 
 **Parameters:**
 
@@ -1594,7 +1599,7 @@ truncated per part with `diffTruncated: true`; `added`/`removed` still reflect t
 | `owner` | string | No | New owner SAP username (required for reassign) |
 | `recursive` | boolean | No | Apply recursively to child tasks (for delete/reassign). `release_recursive` always recurses. |
 | `removeLockedObjects` | boolean | No | For delete: remove locked object entries from each task before deleting when SAP would otherwise reject the request as containing locked objects. This mutates request contents. |
-| `summary` | boolean | No | For `list` only. **Default `true`** — headers-only: omits each transport's (and task's) `objects[]`, keeping `id`/`description`/`owner`/`status`/`target` plus an `objectCount`. Pass `false` for full object lists (~5x larger). |
+| `summary` | boolean | No | For `diff`, true omits hunks. For `list`, **Default `true`** — headers-only: omits each transport's (and task's) `objects[]`, keeping `id`/`description`/`owner`/`status`/`target` plus an `objectCount`. Pass `false` for full object lists (~5x larger). |
 | `maxResults` | number | No | Maximum list rows or check/history assignment candidates (defaults: list/history 50, check 10; max 1000). |
 | `resultFormat` | string | No | For `release`/`release_recursive`: `legacy` text (default) or `structured` JSON with outcome, per-ID confirmation evidence, polls, elapsed time, and SAP reports. |
 | `timeoutSeconds` | number | No | For `release`/`release_recursive`: terminal-state verification budget; default `300`, range `1..1800`. |
