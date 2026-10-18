@@ -206,11 +206,18 @@ function buildBaseErrorMessage(
   if (err instanceof AdtResponseLimitError) {
     const mebibytes = err.limitBytes / (1024 * 1024);
     const displayLimit = Number.isInteger(mebibytes) ? `${mebibytes} MiB` : `${err.limitBytes}-byte`;
+    const hint =
+      err.endpointFamily === 'feed-schema'
+        ? 'Inspect the advertised feed schema in SAP ADT; this response cannot be paged here.'
+        : err.endpointFamily === 'dumps'
+          ? 'Narrow from/to or filters, or lower maxResults.'
+          : undefined;
     return toolJson({
       error: err.code,
-      message:
-        `The SAP data-preview result exceeded the ${displayLimit} server limit. ` +
-        'Submit a new request with lower maxRows, fewer columns, or a restrictive non-overlapping key-range WHERE clause.',
+      message: hint
+        ? `The SAP diagnostic response exceeded the ${displayLimit} limit. ${hint}`
+        : `The SAP data-preview result exceeded the ${displayLimit} server limit. ` +
+          'Submit a new request with lower maxRows, fewer columns, or a restrictive non-overlapping key-range WHERE clause.',
       limitBytes: err.limitBytes,
       retryable: false,
       requestId: err.requestId ?? getCurrentContext()?.requestId,

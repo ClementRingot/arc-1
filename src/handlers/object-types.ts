@@ -348,6 +348,8 @@ export function normalizeTypeArgsForValidation(
         type: cleaned.type === undefined ? undefined : normalizeObjectType(String(cleaned.type ?? '')),
       };
     case 'SAPDiagnose':
+      // Empty optional filter selections preserve the ordinary call, including strict-client filler.
+      if (Array.isArray(cleaned.filters) && cleaned.filters.length === 0) delete cleaned.filters;
       // Strict-schema clients may supply an empty placeholder on single-object
       // or unrelated actions. An actual empty ATC batch remains a validation error.
       if (

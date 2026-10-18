@@ -174,6 +174,7 @@ const MULTI_TARGET_BUDGET: ToolSchemaBudget = {
   maxPerToolWireBytes: PER_TOOL_WIRE_WALL,
 };
 
+// Dump filtering adds one described property; concise diagnostic wording retains all wire/token ceilings.
 export const TOOL_SCHEMA_SCENARIOS: ToolSchemaScenario[] = [
   {
     name: 'standard-default',
@@ -186,7 +187,7 @@ export const TOOL_SCHEMA_SCENARIOS: ToolSchemaScenario[] = [
       // The read wire ceiling is unchanged; source-window growth is recorded above.
       schemaTokenEstimate: 12_000,
       descriptionTokenEstimate: 8_800,
-      descriptionCount: 190,
+      descriptionCount: 191,
       maxTotalWireBytes: READ_WIRE_WALL,
       maxPerToolWireBytes: PER_TOOL_WIRE_WALL,
     },
@@ -258,7 +259,7 @@ export const TOOL_SCHEMA_SCENARIOS: ToolSchemaScenario[] = [
     budget: {
       schemaTokenEstimate: 12_000,
       descriptionTokenEstimate: 8_800,
-      descriptionCount: 190,
+      descriptionCount: 191,
       maxTotalWireBytes: READ_WIRE_WALL,
       maxPerToolWireBytes: PER_TOOL_WIRE_WALL,
     },

@@ -153,6 +153,7 @@ export const ACTION_POLICY: Record<string, ActionPolicy> = {
   'SAPDiagnose.atc_variants': { scope: 'read', opType: OperationType.Read },
   'SAPDiagnose.cds_testcases': { scope: 'read', opType: OperationType.Read },
   'SAPDiagnose.dumps': { scope: 'read', opType: OperationType.Read },
+  'SAPDiagnose.feed_schema': { scope: 'read', opType: OperationType.Read },
   'SAPDiagnose.traces': { scope: 'read', opType: OperationType.Read },
   // Arming/cancelling a trace request mutates server state → write; listing armed requests is read-only.
   'SAPDiagnose.trace_start': { scope: 'write', opType: OperationType.Update },

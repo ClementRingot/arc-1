@@ -99,9 +99,10 @@ sequence.
 | [FEAT-73](#feat-73) | Additional server-driven object types | P3 | S | Needs research | Object coverage |
 | [FEAT-78](#feat-78) | Table type access type and keys | P2 | M | Needs research | Object coverage |
 | [FEAT-09](#feat-09) | Cross Trace result reader | P2 | M | Needs research | Diagnostics |
-| [FEAT-69](#feat-69) | Mass syntax check | P2 | S | Ready | Diagnostics |
+| [FEAT-69](#feat-69) | Mass syntax check | P2 | S | Needs research | Diagnostics |
 | [FEAT-71](#feat-71) | Dictionary activation log | P3 | M | Needs research | Diagnostics |
-| [FEAT-74](#feat-74) | Dump feed attribute filters | P3 | S | Ready | Diagnostics |
+| [FEAT-91](#feat-91) | Validate the legacy dump user filter | P2 | S | Needs research | Diagnostics |
+| [FEAT-74](#feat-74) | Qualify dump-filter matching | P2 | S | Needs research | Diagnostics |
 | [FEAT-50](#feat-50) | ADT type-probe fixture coverage | P3 | XS each | Contributor-driven | Diagnostics |
 | [FEAT-32](#feat-32) | Stable data-preview pagination | P3 | M | Needs research | Data access |
 | [FEAT-86](#feat-86) | Additional stored-text profiles and persistence | P3 | M | Needs research | Data access |
@@ -756,48 +757,36 @@ volume limits are not implemented.
 and keep trace activation separate from result reading.
 
 <a id="feat-74"></a>
-### FEAT-74 — Dump feed attribute filters
+### FEAT-74 — Qualify dump-filter matching
 
-- **Priority / effort / status:** P3 / S / Ready
+- **Priority / effort / status:** P2 / S / Needs research
 - **Category:** Diagnostics
 
-**Idea.** Let `SAPDiagnose(action="dumps")` filter short dumps by the other attributes SAP's feed
-supports, not only `user` and the time window.
+**Remaining gap.** Bounded typed filters and optional schema discovery are implemented for dump
+lists, with A4H/001 positive/negative runtime-error matches and synthetic mixed-day/paging controls.
+Other releases/auth routes and advertised attributes/operators are not qualified. Wildcard and
+whitespace string values remain refused. Model success remains uneven; earlier failures are retained.
 
-**Why it remains.** `GET /sap/bc/adt/feeds` self-describes the dumps feed, and its
-`feed:attributes` list is much wider than what ARC-1 exposes: `runtimeError`, `exception`,
-`objectName`, `package`, `packageHierarchy`, `component`, `responsible`, `objectResponsible`,
-`packageResponsible`, and a `dateTime`-typed `datetime`. The declared operators are `equals`,
-`notEquals`, `contains`, `notContains`, `greater`, `greaterOrEquals`, `less`, `lessOrEquals`,
-`between`, `notBetween`, with `queryDepth` 2. Live-verified on SAP_BASIS 816 (2026-09-22):
-`and(contains(objectName,SAPM))` returned 11 entries and
-`and(between(datetime,20260901000000,20260910000000))` returned 49, against an unfiltered feed
-capped at 100. Filtering server-side is far cheaper than paging the whole feed and discarding
-entries client-side, and answers questions ARC-1 cannot express today, such as "every TIME_OUT
-dump in package Z\*".
-
-**Resume with.** Read the per-system `feed:attributes` rather than hardcoding the list (it is
-release-dependent and also published for system messages and the gateway error log), map a small
-typed filter input onto the `and(...)` grammar without string-concatenating caller text, and keep
-the existing `user`/`from`/`to` parameters working. Note that the feed's own `rel="next"` link
-appends `sap-client` on every hop, so paging must keep rebuilding the `to` cursor as
-`listDumps` does.
+**Resume with.** A concrete target or filter task. Verify a positive and negative match on that
+target, including date bounds and caller identity, before broadening values or claiming support.
+Keep schema discovery optional and ordinary list/detail behavior unchanged.
+[Extraction and evidence](https://github.com/arc-mcp/arc-1/blob/main/docs/research/2026-10-17-dump-filter-extraction.md).
 
 <a id="feat-69"></a>
 ### FEAT-69 — Mass syntax check
 
-- **Priority / effort / status:** P2 / S / Ready
+- **Priority / effort / status:** P2 / S / Needs research
 - **Category:** Diagnostics
 
-**Idea.** Extend the read-only `SAPRead(type="SYNTAX")` route to check a bounded list of objects
-and return per-object findings without stopping at the first failure.
+**Remaining gap.** Draft [#1011](https://github.com/arc-mcp/arc-1/pull/1011) has bounded native
+batch syntax checks. A model completed four checks in one call; a synthetic transport-review spike
+preserved source checks while reducing diagnostic HTTP calls 21→18 and increasing returned bytes.
+This remains useful unextracted work after the dump-filter extraction.
 
-**Why it remains.** The current syntax action accepts one object. ATC can cover packages or object
-sets, but it is heavier and semantically different from a direct syntax check.
-
-**Resume with.** Validate multiple entries in ADT's existing `checkObjectList` request, then add a
-strict object-count limit, deterministic per-object findings, explicit incomplete/error results,
-and aggregate counts. Bound concurrency if a per-object fallback is necessary.
+**Resume with.** An independent batch-only extraction onto main. Preserve single-object behavior,
+missing reports, per-object failures, supported types and target qualification. Transport integration
+needs a separate policy/source-reconciliation review; do not bypass the dispatcher with raw HTTP.
+[Prior code and evidence](https://github.com/arc-mcp/arc-1/blob/5725fab6515f7a410e3e488003ae1a7aa3d8c249/docs/research/2026-10-17-diagnostic-main-decision.md).
 
 <a id="feat-71"></a>
 ### FEAT-71 — Dictionary activation log
@@ -805,13 +794,27 @@ and aggregate counts. Bound concurrency if a per-object fallback is necessary.
 - **Priority / effort / status:** P3 / M / Needs research
 - **Category:** Diagnostics
 
-**Idea.** Return useful DDIC activation-log details after a failed or warning-producing activation.
+**Remaining gap.** [#1011](https://github.com/arc-mcp/arc-1/pull/1011) verified a readable advertised
+DOMA log on 758. Saved logs have no verified latest-attempt correlation. Two model evaluations
+misinterpreted historical evidence despite explicit caveats; other types/releases remain unqualified.
 
-**Why it remains.** The known activation-log resource is not a simple readable GET endpoint. The
-request shape, lifetime, and relation to an activation request are not sufficiently established.
+**Resume with.** A concrete historical-log workflow that preserves uncertainty, or independent
+native correlation evidence. Keep the experiment deferred and never label saved messages as proof
+of a recent activation. [Failed controls](https://github.com/arc-mcp/arc-1/blob/5725fab6515f7a410e3e488003ae1a7aa3d8c249/docs/research/2026-10-17-diagnostic-main-decision.md).
 
-**Resume with.** Capture the live request/response sequence for a controlled DDIC activation
-failure and define a bounded, sanitized output contract.
+<a id="feat-91"></a>
+### FEAT-91 — Validate the legacy dump user filter
+
+- **Priority / effort / status:** P2 / S / Needs research
+- **Category:** Diagnostics
+
+**Remaining gap.** The older user-only path still inserts its trimmed value into the query grammar.
+Typed-filter calls validate this value, but ordinary calls preserve existing behavior. The extraction
+adds compatibility tests rather than changing SAP user-name or wildcard semantics without evidence.
+
+**Resume with.** Verify supported username characters and matching semantics, then add a narrow
+validator without schema discovery on the legacy path. Retain fail-before grammar tests and a live
+positive match. [Original finding](https://github.com/arc-mcp/arc-1/blob/5725fab6515f7a410e3e488003ae1a7aa3d8c249/docs/research/adt-vscode-1.2/evidence/diagnostics-review/claude-review-1.md).
 
 <a id="feat-50"></a>
 ### FEAT-50 — ADT type-probe fixture coverage

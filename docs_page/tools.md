@@ -2180,7 +2180,7 @@ administrators can disable them with `SAP_DENY_ACTIONS`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `action` | string | Yes | `syntax`, `unittest`, `unittest_ci`, `atc`, `atc_ci`, `atc_variants`, `cds_testcases`, `dumps`, `traces`, `trace_start`, `trace_requests`, `trace_cancel`, `system_messages`, `gateway_errors`, `object_state`, `quickfix`, `apply_quickfix`, `odata_perf`, `cds_sql`, `sql_trace_state`, `set_sql_trace_state`, `sql_trace_directory`, or `authorization_trace` |
+| `action` | string | Yes | `syntax`, `unittest`, `unittest_ci`, `atc`, `atc_ci`, `atc_variants`, `cds_testcases`, `dumps`, `feed_schema`, `traces`, `trace_start`, `trace_requests`, `trace_cancel`, `system_messages`, `gateway_errors`, `object_state`, `quickfix`, `apply_quickfix`, `odata_perf`, `cds_sql`, `sql_trace_state`, `set_sql_trace_state`, `sql_trace_directory`, or `authorization_trace` |
 | `name` | string | No | Object or package name (required for syntax/unittest/object_state/quickfix/apply_quickfix, and atc without objects; the CDS entity / DDLS source name for `cds_testcases` and `cds_sql`) |
 | `objects` | array | No | ATC only: 1–20 `{type,name}` entries instead of top-level `name`, `type`, or `url`. Supported: `CLAS`, `INTF`, `PROG`, `FUGR`, `DDLS`, `DCLS`, `BDEF`, `DDLX`, `SRVD`, `SRVB`, `TABL`, `DTEL`, `DOMA`. `TABL` includes tables and structures (`TABL/DT` and `TABL/DS` aliases). Names and type aliases are normalized; duplicates execute once. No package expansion or per-item system selection. `PROG` is on-premises only. |
 | `url` | string | No | For `odata_perf`: the host-relative OData path to probe (from the Fiori app's Network tab), e.g. `/sap/opu/odata4/sap/.../Entity?$filter=...`. Must be a path on the SAP system ARC-1 connects to — absolute URLs are rejected. |
@@ -2201,9 +2201,10 @@ administrators can disable them with `SAP_DENY_ACTIONS`.
 | `detailUrl` | string | No | For Gateway-error detail: canonical host-relative `/sap/bc/adt/gw/errorlog/...` path. Absolute URLs, traversal, encoded separators, and non-canonical encodings are rejected. |
 | `errorType` | string | No | Gateway error type required when requesting detail by `id` rather than `detailUrl`, e.g. `Frontend Error`. |
 | `user` | string | No | SAP-user filter for dumps, runtime feeds, or `authorization_trace` |
+| `filters` | array | No | Dumps list only: target-advertised `{attribute, operator, values}` conditions, combined with AND; eight conditions including `user` |
 | `authObject` | string | No | For `authorization_trace`: filter to one authorization object, for example `S_TCODE` |
-| `from` | string | No | Lower time boundary for `system_messages`/`gateway_errors`. |
-| `to` | string | No | Upper time boundary for `system_messages`/`gateway_errors`. |
+| `from` | string | No | Lower time boundary for `dumps`/`system_messages`/`gateway_errors`. |
+| `to` | string | No | Upper time boundary for `dumps`/`system_messages`/`gateway_errors`. |
 | `onlyFailures` | boolean | No | For `authorization_trace`: return only denied checks (`RC <> 0`) |
 | `maxResults` | number | No | Maximum results (default 50 for dumps/feeds, 100 for `authorization_trace`; safely capped) |
 | `sections` | array | No | Dump chapter IDs for detail mode, e.g. `["kap0","kap3","kap8"]`; omit for focused defaults. |
@@ -2248,7 +2249,8 @@ Both CI actions are excluded from multi-target mode. Software-component selectio
 - **`object_state`** — Compare active and inactive source versions for one object. For `CLAS`, ARC-1 checks main, definitions, implementations, macros, and testclasses includes (up to 10 parallel reads per class; sequence calls when sweeping many classes). Returns ETags, byte lengths, SHA-256 hashes, and divergence flags without returning full source. Useful for diagnosing activation failures where active and inactive class includes disagree. Server-driven types are refused because SAP may substitute one version for another; matching hashes alone cannot prove version identity. Use `SAPRead` with an explicit `version` for those types.
 - **`quickfix`** — Get SAP quickfix proposals for a specific source position (`name`, `type`, `source`, `line`, optional `column`). Classes/interfaces must already exist in SAP; activation and saving the supplied edits are not required. Returns proposal entries with `uri`, `type`, `name`, `description`, `userContent`.
 - **`apply_quickfix`** — Apply one proposal (`proposalUri` + `proposalUserContent`) and return text deltas (range + replacement content). The class/interface must still exist. Preserve the returned whitespace, review affected objects, and syntax-check the edited buffer: SAP can suggest incomplete types. This does not write source; use `SAPWrite` to persist.
-- **`dumps`** — List short dumps (ST22). Without `id`: returns recent dumps (filterable by `user`, `maxResults`). With `id`: returns full dump detail including error type, exception, program, stack trace, and formatted output.
+- **`dumps`** — List short dumps (ST22), newest first, with `user`, `from`, `to`, `maxResults` and optional typed `filters`. With `id`: read full detail including error type, exception, program, stack trace and formatted output; filters are refused in detail mode.
+- **`feed_schema`** — Optional discovery of supported dump attributes/operators; accepts only `action`. Known filters can be called directly.
 - **`traces`** — List ABAP profiler traces. Without `id`: returns trace list. With `id` + `analysis`: returns trace analysis (`hitlist` = call hierarchy with hit counts and timings, `statements` = executed statements, `dbAccesses` = database access details).
 - **`trace_start`** — Arm an ABAP profiler request for the next matching execution. Defaults to the next HTTP request by the connected user, with SQL capture on. This changes SAP trace-request state and needs `write` scope plus `SAP_ALLOW_WRITES=true`; reproduce the workload, then read it through `traces`.
 - **`trace_requests`** — List armed profiler requests, optionally filtered by `traceUser`. Read-only.
@@ -2299,6 +2301,37 @@ SAPDiagnose(action="sql_trace_state")                               — is the S
 SAPDiagnose(action="set_sql_trace_state", sqlOn=true, user="DEVELOPER") — arm the SQL trace for one user (needs SAP_ALLOW_WRITES)
 SAPDiagnose(action="sql_trace_directory")                           — get SAP's SQL Trace Analysis deep-link to read the records
 ```
+
+### Find a particular runtime error
+
+Call the list directly when the filter is known:
+
+```json
+{
+  "action": "dumps",
+  "from": "2026-10-17",
+  "to": "2026-10-17T23:59:59Z",
+  "maxResults": 20,
+  "filters": [{ "attribute": "runtimeError", "operator": "equals", "values": ["MESSAGE_TYPE_X"] }]
+}
+```
+
+If SAP does not advertise an attribute/operator, the call returns an error without listing
+unfiltered dumps. `SAPDiagnose({"action":"feed_schema"})` can help choose a supported filter;
+there is no mandatory discovery step. Each filtered call validates against the selected target.
+
+| Contract | Behavior |
+|---|---|
+| Combination | Flat AND, up to eight conditions including a nonempty legacy `user`; no OR or nested expressions |
+| Values | One or two values as advertised. Strings: 1–128 ASCII letters/digits or `_ / $ . -` (without spaces). Wildcards, whitespace and query delimiters are refused. Datetimes: valid UTC `YYYYMMDDHHMMSS`. |
+| Paging | Existing inclusive `from`/`to`, deduplication and 500-row cap; every page retains the filters. A same-second paging limit stays an error. |
+| Budgets | Filtered list: 30 seconds and 2 MiB cumulative schema/page bodies. Standalone schema: 15 seconds / 256 KiB. No shared schema cache. |
+| Compatibility | Ordinary list/detail calls keep their request behavior. `filters: []` is treated as omitted. A `user` combined with filters must meet the narrower string rules. |
+| Policy | Both actions require read scope. Denying `SAPDiagnose.feed_schema` hides explicit discovery; allowed `dumps` still validates its own filters internally. |
+
+The extraction is live-qualified on A4H/001 (last recorded SAP_BASIS 758 SP02). Other targets,
+attributes and operators need their own qualification; advertised metadata alone does not prove
+matching semantics. [Validation and remaining gaps](https://github.com/arc-mcp/arc-1/blob/main/docs/research/2026-10-17-dump-filter-extraction.md).
 
 ### Quickfix Workflow
 

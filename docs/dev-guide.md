@@ -403,3 +403,16 @@ passed subsequent checks; the SAP-internal cause remains inferred. See the
 - **Not yet shipped** (see `docs/plans/2026-06-12-test-isolation-and-parallel-runs.md`): CI `retry: 1` paired
   with flake telemetry (H2), a parallel read-only e2e project (F2), and a cross-run flake-aggregation
   workflow (H3). The plan rates these measure-first / conditional on the F1 numbers.
+
+## Dump feed filters
+
+`feed-schema.ts` reads only the fixed dumps schema, compiles bounded flat AND conditions and
+creates one filtered-call budget. `diagnostics.ts` retains cursor paging and the legacy query
+encoder. `dump-filter-inputs.ts` owns schema fragments and action-specific validation. Keep the
+JSON schema, Zod, handler, policy and multi-target allowlist aligned. Unfiltered calls must remain
+exactly `(path, headers)` without new schema/budget options. Typed values are deliberately narrower
+than legacy `user`; do not broaden them without wire evidence.
+
+Tests: `tests/unit/{adt,handlers}/dump-filters.test.ts`, existing diagnostics and tool-surface tests.
+[Evidence](research/2026-10-17-dump-filter-extraction.md) distinguishes live matching from synthetic
+pagination/model checks. See [usage](../docs_page/tools.md#find-a-particular-runtime-error).
