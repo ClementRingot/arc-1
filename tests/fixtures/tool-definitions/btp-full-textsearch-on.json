@@ -1144,7 +1144,7 @@
   },
   {
     "name": "SAPQuery",
-    "description": "sql (default when action omitted): Query BTP ABAP Environment with ABAP SQL; returns columns + rows. ADT freestyle ABAP SQL: one read-only SELECT. Use AS aliases, alias~field/alias~*, ASCENDING/DESCENDING, single-quoted literals (no @/:/? parameters), and maxRows (not TOP/LIMIT/OFFSET/FETCH). JOINs, GROUP BY, aggregates, UNION and subqueries work. CTEs, FULL JOIN, derived/window tables, INTERSECT/EXCEPT, comments, semicolons and schema prefixes do not. ARC-1 auto-chunks long literal IN-lists in plain projection SELECTs. BTP permits custom Z/Y tables and released CDS entities; standard tables are blocked. Use released views such as I_LANGUAGE. Unknown tables get suggestions.",
+    "description": "sql (default): Query BTP ABAP Environment with ABAP SQL; returns columns + rows. Read-only ABAP SQL SELECT: AS aliases, alias~field/alias~*, ASCENDING/DESCENDING; single-quoted literals (no @/:/?). maxRows, not TOP/LIMIT/OFFSET/FETCH. JOIN/GROUP BY/aggregates/UNION/subqueries; no CTE/FULL JOIN/derived/window tables/INTERSECT/EXCEPT/comments/semicolons/schema prefixes. Long literal IN-lists auto-chunk in plain projection SELECTs. BTP permits custom Z/Y tables and released CDS entities; standard tables are blocked. Use released views such as I_LANGUAGE. Unknown tables get suggestions.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1155,12 +1155,11 @@
           ]
         },
         "sql": {
-          "type": "string",
-          "description": "ABAP SQL SELECT statement"
+          "type": "string"
         },
         "maxRows": {
           "type": "number",
-          "description": "Rows (default 100, max 10,000; byte limit may apply sooner)."
+          "description": "Default 100; max 10,000; byte-capped."
         }
       },
       "required": [

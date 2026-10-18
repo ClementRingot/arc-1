@@ -76,6 +76,7 @@ export interface SapErrorClassification {
     | 'method-not-supported'
     | 'icf-handler-not-bound'
     | 'icf-service-inactive'
+    | 'gateway-service-not-found'
     | 'bdef-base-not-extensible'
     | 'include-not-initialized'
     | 'data-view-not-authorized'
@@ -612,6 +613,24 @@ export function classifySapDomainError(
   const bodyRaw = responseBody ?? '';
   const bodyLower = bodyRaw.toLowerCase();
   const typeId = extractExceptionType(bodyRaw);
+
+  // Gateway MED/170 is a service-resolution failure, even though it returns 403.
+  // Verified on 7.50/8.16; match the structured code, not localized message text (SAP KBA 2498534).
+  if (statusCode === 403 && path?.startsWith('/sap/opu/odata/')) {
+    let code: unknown;
+    try {
+      code = JSON.parse(bodyRaw)?.error?.code;
+    } catch {
+      // Non-JSON responses retain their existing classification.
+    }
+    if (code === '/IWFND/MED/170') {
+      return {
+        category: 'gateway-service-not-found',
+        hint: 'SAP Gateway could not resolve the OData service. Ask Basis to check service registration and routing in /IWFND/MAINT_SERVICE and /IWBEP/REG_SERVICE before retrying.',
+        transaction: '/IWFND/MAINT_SERVICE',
+      };
+    }
+  }
 
   // A direct save to an uninitialized CCAU include fails with this error (#303).
   // NW 7.50 uses the same message for missing programs, which need the normal not-found hint.

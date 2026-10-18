@@ -78,6 +78,7 @@ export const ACTION_POLICY: Record<string, ActionPolicy> = {
   // ── SAPQuery: bounded business-data actions and separately gated freestyle SQL ──
   SAPQuery: { scope: 'sql', opType: OperationType.FreeSQL },
   'SAPQuery.sql': { scope: 'sql', opType: OperationType.FreeSQL },
+  'SAPQuery.application_log': { scope: 'data', opType: OperationType.Query },
   'SAPQuery.long_text': { scope: 'data', opType: OperationType.Query },
 
   // ── SAPWrite ─────────────────────────────────────────────────────

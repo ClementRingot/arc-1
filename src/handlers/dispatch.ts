@@ -732,6 +732,14 @@ export function classifyMultiTargetSapError(
     };
   }
   const classification = classifySapDomainError(error.statusCode, error.responseBody, error.path);
+  if (classification?.category === 'gateway-service-not-found') {
+    return {
+      code: 'SAP_REQUEST_FAILED',
+      event: 'sap_service_unavailable',
+      message: `SAP Gateway could not resolve the OData service required by ${toolName} on target ${target}. Ask Basis to check service registration and routing in /IWFND/MAINT_SERVICE and /IWBEP/REG_SERVICE before retrying.`,
+      retryable: false,
+    };
+  }
   if (classification?.category === 'icf-service-inactive') {
     return {
       code: 'SAP_SERVICE_INACTIVE',

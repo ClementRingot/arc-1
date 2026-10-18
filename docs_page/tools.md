@@ -1440,21 +1440,22 @@ proposals, without proving that no matching identifier exists.
 ## SAPQuery
 
 `SAPQuery` has distinct paths for semantic data actions and freestyle ABAP SQL. Choose
-`action="long_text"` for saved SAPscript texts; use `sql` for an arbitrary ABAP SQL query. These
-paths have separate authorization gates. The long-text action requires the `data` scope and
+`action="long_text"` for saved SAPscript texts or `action="application_log"` for a known SLG1 log;
+use `sql` for an arbitrary ABAP SQL query. The bounded actions require the `data` scope and
 `SAP_ALLOW_DATA_PREVIEW=true`; freestyle SQL requires `sql` scope and `SAP_ALLOW_FREE_SQL=true`.
-Both capabilities are disabled by default. Long-text access does not enable or require free SQL.
+All are disabled by default. Bounded data access does not enable or require free SQL.
 
-**Upgrading with data preview already enabled:** eligible callers also gain `long_text`.
-Add `SAPQuery.long_text` to `SAP_DENY_ACTIONS` to keep it disabled.
+**Upgrading with data preview already enabled:** eligible callers gain both bounded actions.
+Use `SAP_DENY_ACTIONS` to disable `SAPQuery.long_text` or `SAPQuery.application_log` individually.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `action` | string | No | Set to `"long_text"` for the bounded stored-SAPscript contract below. Omit it or use `"sql"` for freestyle ABAP SQL. |
+| `action` | string | No | `"long_text"` for stored SAPscript or `"application_log"` for saved SLG1 messages. Omit it or use `"sql"` for freestyle ABAP SQL. |
 | `longText` | object | For `action="long_text"` | Required request: `mode="discover"` with `object`+`namePrefix` (optional `id`, `language`, `limit`), `mode="read"` with `keys`, or `mode="search"` with `keys`+`phrase`. |
-| `sql` | string | For freestyle SQL | ABAP SQL SELECT statement; omit for `action="long_text"`. |
+| `applicationLog` | object | For `action="application_log"` | Exact `logNumber`, optional `maxRows` (default 50, max 100) and `offset` (default 0, max 5000). |
+| `sql` | string | For freestyle SQL | ABAP SQL SELECT statement; omit for bounded data actions. |
 | `maxRows` | number | No | Freestyle SQL only: maximum rows (default 100, clamped to 10,000). Wide results can hit the server byte ceiling much earlier. |
 
 <a id="stored-sapscript-long-texts"></a>
@@ -1506,6 +1507,38 @@ formats, INCLUDE expansion, and rendering are unsupported. Treat SAPscript comma
 Reads detect observed changes but do not guarantee a transactional snapshot. This is separate
 from ABAP `TEXT_ELEMENTS`, message-class texts, and form layouts. See the
 [qualification evidence and technical limits](https://github.com/arc-mcp/arc-1/blob/main/docs/research/2026-10-17-stored-text-integration-evals.md).
+
+### Saved application logs (`action="application_log"`)
+
+Read a known **SLG1 log number** using SAP's `APL_LOG_MANAGEMENT_SRV` service. Enable
+`SAP_ALLOW_DATA_PREVIEW=true`; authenticated callers need `data` scope and SAP service/log
+authorizations. No RFC, ABAP helper, or free SQL is used.
+
+Use this to inspect errors from a saved import, background job, or activation log. If you only
+know the job or business document, first find its log number in SAP (for example, SLG1).
+
+```json
+{"action":"application_log","applicationLog":{"logNumber":"00000000000000000042","maxRows":50}}
+```
+
+Copy the exact 20-digit number from SAP, including leading zeros. The result contains the log
+header and SAP-rendered messages. When `more=true`, use the returned `nextOffset` as `offset`.
+Default page size is 50, maximum 100; offsets stop at 5000. `limitReached=true` means the read
+is incomplete and cannot continue through this action. Paging is not a snapshot.
+`not_found_or_not_visible` means no log is visible for that number, not proof that it does not exist.
+A successful empty result contains no messages on that page. `hasLongText` and `hasDetails`
+indicate availability; their contents are not returned. Message `number` identifies a row in
+the log, not a T100 message class/number.
+
+This first version does not discover logs or expand message details/long texts. It is qualified
+on the tested 7.58 system; other systems need the native service enabled and accessible. BTP ABAP
+targets and deployments with `SAP_BLOCKED_DATA_SOURCES` configured are unsupported. SAP loads
+the selected log internally even when ARC-1 returns a small page. To disable this action alone,
+set `SAP_DENY_ACTIONS=SAPQuery.application_log`.
+
+If SAP returns `No service found` (`/IWFND/MED/170`), ask Basis to check this service's Gateway
+registration in `/IWFND/MAINT_SERVICE`. That response can be HTTP 403; it does not establish
+that the user lacks log permissions. ARC-1 does not activate services or bypass the error.
 
 ### Freestyle SQL behavior
 

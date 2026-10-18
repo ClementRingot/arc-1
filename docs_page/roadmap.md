@@ -106,6 +106,8 @@ sequence.
 | [FEAT-32](#feat-32) | Stable data-preview pagination | P3 | M | Needs research | Data access |
 | [FEAT-86](#feat-86) | Additional stored-text profiles and persistence | P3 | M | Needs research | Data access |
 | [FEAT-87](#feat-87) | Preserve repeated spaces in general data queries | P2 | S | Needs research | Data access |
+| [FEAT-88](#feat-88) | Application-log discovery and wider qualification | P3 | M | Needs research | Data access |
+| [FEAT-89](#feat-89) | Additional typed data-cluster use cases | P3 | M | Needs research | Data access |
 | [FEAT-90](#feat-90) | Historical transport scope beyond source | P2 | M | Needs research | Developer workflow |
 | [FEAT-36](#feat-36) | Type information | P3 | S | Blocked | Code intelligence |
 | [FEAT-79](#feat-79) | DDIC-aware dependency context | P2 | M | Needs research | Code intelligence |
@@ -884,6 +886,38 @@ The stored-text reader preserves its own literals; the general query paths still
 **Resume with.** Positive and negative live cases for leading, internal and trailing spaces in
 equality, LIKE and IN predicates. Preserve existing query semantics and safety gates; qualify the
 backend grammar before generalizing the stored-text workaround.
+
+<a id="feat-88"></a>
+### FEAT-88 — Application-log discovery and wider qualification
+
+- **Priority / effort / status:** P3 / M / Needs research
+- **Category:** Data access
+
+**Remaining gap.** Exact `SAPQuery(application_log)` reads use SAP's native OData service;
+restricted-user allow/deny checks passed on 7.58. Finding logs by object/time range, message
+details, BTP ABAP, principal propagation and additional active-service releases remain unqualified. Positive `$top`
+limits output, not SAP's full-log load. Do not add `/$count`, broad text searches, or BALDAT fallback
+without separate authorization and resource-cost evidence.
+
+**Resume with.** A concrete support workflow and an active service on the target landscape.
+Qualify native filters, time zones, DCL/BAdI restrictions and pagination before expanding the tool.
+See the [native-reader investigation](https://github.com/arc-mcp/arc-1/blob/main/docs/research/2026-10-18-application-log-native-reader.md).
+
+<a id="feat-89"></a>
+### FEAT-89 — Additional typed data-cluster use cases
+
+- **Priority / effort / status:** P3 / M / Needs research
+- **Category:** Data access
+
+**Remaining gap.** [PR #844](https://github.com/arc-mcp/arc-1/pull/844) also proposes INDX/custom
+clusters, DDIC layouts and legacy formats. Stored SAPscript texts and native application-log reads
+do not replace these capabilities. Broad integration is deferred: the proposed parser needs
+independent allocation/row/depth limits, exact fragment identity, and qualified encoding/layout
+semantics. Prefer purpose-specific native APIs where available.
+
+**Resume with.** A named customer workflow that cannot use an existing API, plus sanitized native
+fixtures and expected values across the relevant releases/platforms. Preserve data gates, blocklists,
+current-user identity, and bounded output; no RFC or executed ABAP fallback in core (ADR-0009).
 
 <a id="feat-36"></a>
 ### FEAT-36 — Type information
