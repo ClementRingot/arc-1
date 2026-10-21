@@ -1066,7 +1066,8 @@ export class AdtHttpClient {
         statusCode: response.status,
         durationMs: Date.now() - started,
         success: !!usableToken(response),
-        adtMode: this.config.sessionType ?? 'unspecified',
+        adtMode:
+          headers['X-sap-adt-sessiontype'] === undefined ? 'unspecified' : (this.config.sessionType ?? 'unspecified'),
         hasContext: /(?:^|;\s*)sap-contextid=/.test(cookieHeader ?? ''),
       });
       if (method === 'GET' && response.status === 200 && !usableToken(response)) {
@@ -1102,7 +1103,15 @@ export class AdtHttpClient {
       // The tested 7.50/7.58/8.16 systems returned HEAD 400 with a token; GET returned 200.
       // Retry these HEAD refusals or a successful response without a token on the same path.
       // A successful HEAD with a usable token remains the one-request fast path.
+      const headStatus = response.status;
       if ([400, 403, 405].includes(response.status) || (response.ok && !usableToken(response))) {
+        response = await probe('GET');
+      }
+
+      // Both stateful discovery probes can fail on affected routes (#1044). Bootstrap once
+      // without that header; keep identity/cookies and subsequent lock/write requests stateful.
+      if (this.config.sessionType === 'stateful' && headStatus === 400 && response.status === 400) {
+        delete headers['X-sap-adt-sessiontype'];
         response = await probe('GET');
       }
 
