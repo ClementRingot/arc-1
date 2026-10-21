@@ -475,7 +475,7 @@ export function getToolDefinitions(
                 expand_includes: {
                   type: 'boolean',
                   description:
-                    'FUGR only: expand main and nested includes to reach function bodies. Blocks have "=== name ===" markers; depth/count-capped. Excludes dynpros and GUI status.',
+                    'PROG/INCL/FUGR: add nested includes as "=== name ===" blocks; bounded, a closing note reports omissions. With grep: search all (FUGR: implied). No dynpros.',
                 },
               }),
           format: {

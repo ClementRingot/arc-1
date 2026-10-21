@@ -33,6 +33,7 @@ import { extractMethod, formatMethodListing, listMethods } from '../context/meth
 import { logger } from '../server/logger.js';
 import { type CacheSecurityContext, inactiveListUserKey, invalidateInactiveList } from './cache-security.js';
 import { readEditableSource } from './editable-source.js';
+import { includeSearchHint, readExpandedSource } from './expanded-read.js';
 import { getCachedFeatures, isBtpSystem } from './feature-cache.js';
 import {
   detectLocalHandlerInclude,
@@ -95,15 +96,16 @@ export async function resolveVersionAndDraftInfo(
   name: string,
   requestedVersion: RequestedSourceVersion,
   cacheSecurity: CacheSecurityContext,
-): Promise<{ effectiveVersion: SourceVersion; draft?: InactiveObject }> {
+): Promise<{ effectiveVersion: SourceVersion; draft?: InactiveObject; inactiveObjects?: InactiveObject[] }> {
   if (!VERSIONED_SOURCE_READ_TYPES.has(type)) {
     return { effectiveVersion: requestedVersion === 'auto' ? 'active' : requestedVersion };
   }
 
   let draft: InactiveObject | undefined;
+  let inactiveObjects: InactiveObject[] | undefined;
   if (cachingLayer || requestedVersion !== 'active') {
     try {
-      const inactiveObjects = cachingLayer
+      inactiveObjects = cachingLayer
         ? await cachingLayer.inactiveLists.getOrFetch(client, inactiveListUserKey(client, cacheSecurity))
         : await client.getInactiveObjects();
       const upperName = name.toUpperCase();
@@ -130,9 +132,32 @@ export async function resolveVersionAndDraftInfo(
   }
 
   if (requestedVersion === 'auto') {
-    return { effectiveVersion: draft ? 'inactive' : 'active', draft };
+    return { effectiveVersion: draft ? 'inactive' : 'active', draft, inactiveObjects };
   }
-  return { effectiveVersion: requestedVersion, draft };
+  return { effectiveVersion: requestedVersion, draft, inactiveObjects };
+}
+
+/**
+ * Version rule of `expand_includes` for each include, the same as for the requested object: `auto`
+ * reads the user's own draft where there is one, `inactive` reads every include inactive (SAP returns
+ * the active source where none exists). `draft` marks an include read from the user's draft.
+ */
+function includeVersions(
+  requestedVersion: RequestedSourceVersion,
+  inactiveObjects: InactiveObject[] | undefined,
+  recentlyActivated: (include: string) => boolean,
+): (include: string) => { version: SourceVersion; draft: boolean } {
+  // Built on the first include read, so other SAPRead types pay nothing for it.
+  let drafts: Set<string> | undefined;
+  return (include) => {
+    drafts ??= new Set(
+      (inactiveObjects ?? [])
+        .filter((object) => inactiveTypeMatches('INCL', object.type))
+        .map((object) => object.name.toUpperCase()),
+    );
+    const draft = requestedVersion !== 'active' && drafts.has(include.toUpperCase()) && !recentlyActivated(include);
+    return { version: requestedVersion === 'inactive' || draft ? 'inactive' : 'active', draft };
+  };
 }
 
 function sourceVersionWarning(effectiveVersion: SourceVersion, draft?: InactiveObject): string | undefined {
@@ -307,7 +332,7 @@ export async function handleSAPRead(
     cachingLayer.invalidate(type, name, 'all');
   }
 
-  const { effectiveVersion, draft } = await resolveVersionAndDraftInfo(
+  const { effectiveVersion, draft, inactiveObjects } = await resolveVersionAndDraftInfo(
     client,
     cachingLayer,
     type,
@@ -365,10 +390,22 @@ export async function handleSAPRead(
   };
 
   /** When args.grep is set, return only matching source lines (+context) instead of full source. */
-  const grepText = (source: string): ToolResult => {
+  const grepText = (source: string, hint?: string): ToolResult => {
     const g = grepSource(source, String(args.grep));
-    return g.invalidPattern ? errorResult(g.output) : textResult(g.output);
+    return g.invalidPattern ? errorResult(g.output) : textResult(hint ? `${g.output}\n\n${hint}` : g.output);
   };
+
+  // PROG/INCL expansion: every include follows the version rule of the requested object.
+  const expandedVersions = {
+    root: effectiveVersion,
+    rootDraft: effectiveVersion === 'inactive' && draft !== undefined,
+    include: includeVersions(
+      requestedVersion,
+      inactiveObjects,
+      (include) => !cacheSecurity.isPerUserClient && cachingLayer?.wasRecentlyActivated('INCL', include) === true,
+    ),
+  };
+  const grepArg = args.grep ? String(args.grep) : undefined;
 
   // Structured ordinary reads: class metadata or a package listing envelope.
   if (args.format === 'structured' && type !== 'CLAS' && type !== 'DEVC') {
@@ -379,10 +416,13 @@ export async function handleSAPRead(
 
   switch (type) {
     case 'PROG': {
+      if (args.expand_includes === true) {
+        return readExpandedSource(client, 'PROG', name, grepArg, expandedVersions, versionWarning);
+      }
       const { source, cacheHit, revalidated } = await cachedGet('PROG', name, effectiveVersion, (ifNoneMatch) =>
         client.getProgram(name, { ifNoneMatch, version: effectiveVersion }),
       );
-      if (args.grep) return grepText(source);
+      if (args.grep) return grepText(source, includeSearchHint(name, source));
       return cachedTextResult(source, cacheHit, revalidated, versionWarning);
     }
     case 'CLAS': {
@@ -596,10 +636,13 @@ export async function handleSAPRead(
       return textResult(toolJson(fg));
     }
     case 'INCL': {
+      if (args.expand_includes === true) {
+        return readExpandedSource(client, 'INCL', name, grepArg, expandedVersions, versionWarning);
+      }
       const { source, cacheHit, revalidated } = await cachedGet('INCL', name, effectiveVersion, (ifNoneMatch) =>
         client.getInclude(name, { ifNoneMatch, version: effectiveVersion }),
       );
-      if (args.grep) return grepText(source);
+      if (args.grep) return grepText(source, includeSearchHint(name, source));
       return cachedTextResult(source, cacheHit, revalidated, versionWarning);
     }
     case 'DDLS': {

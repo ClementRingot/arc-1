@@ -1093,7 +1093,7 @@ describe('Tool Definitions', () => {
 
       // method is available on both BTP and on-prem (for CLAS method-level reads)
       expect(schema.properties.method).toBeDefined();
-      // expand_includes is on-prem only (for FUGR)
+      // expand_includes is on-prem only (FUGR, PROG, INCL)
       expect(schema.properties.expand_includes).toBeUndefined();
     });
 

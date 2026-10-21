@@ -55,10 +55,10 @@ Use `SAPRead` for exact implementation behavior, an exact reference, one method 
 | `format` | string | No | Output format: `"text"` (default), `"structured"`, or `"editable"` (fresh source + SHA-256 for guarded writes; see [Source preconditions](#source-preconditions)). For `action="diff"`, structured returns a machine-readable diff envelope; for ordinary reads, structured supports CLAS metadata and DEVC package listings (see below). |
 | `include` | string | No | For CLAS: `main`, `testclasses`, `definitions`, `implementations`, `macros`. With `method=`, an explicit include selects that exact source (including `main`) before method extraction. For DDLS: `elements` (extract CDS view elements). For TEXT_ELEMENTS: `symbols`, `selections`, or `headings` — one part of the text pool; omit for the whole PROG/FUGR pool or CLAS symbols. |
 | `method` | string | No | For CLAS: method name to read (e.g., `get_name`), a qualified local-class method (e.g., `lhc_travel~accept`), or `*` to list methods. With no `include=`, `lhc_*`/`lcl_*` automatically read `implementations`, `ltc_*` reads `testclasses`, and other names read MAIN. |
-| `grep` | string | No | Case-insensitive regex; returns only matching source lines (+3 lines of context, with line numbers) instead of the full object — token-efficient search over source-bearing types (`PROG, CLAS, INTF, FUNC, FUGR, INCL, DDLS, DCLS, BDEF, SRVD, SRVB, SKTD/KTD, DDLX, TABL, VIEW`). For CLAS, matches are annotated with the owning class/method; combine with `include=` to scope a section, but not with `method=`. For FUGR, `grep` implies `expand_includes` and searches each include on its own: matches are grouped under `=== <include> ===` with line numbers counted within that include. Falls back to a literal search when the pattern is not valid regex. |
+| `grep` | string | No | Case-insensitive regex; returns only matching source lines (+3 lines of context, with line numbers) instead of the full object — token-efficient search over source-bearing types (`PROG, CLAS, INTF, FUNC, FUGR, INCL, DDLS, DCLS, BDEF, SRVD, SRVB, SKTD/KTD, DDLX, TABL, VIEW`). For CLAS, matches are annotated with the owning class/method; combine with `include=` to scope a section, but not with `method=`. For FUGR, `grep` implies `expand_includes` and searches each include on its own: matches are grouped under `=== <include> ===` with line numbers counted within that include. For PROG and INCL, `grep` searches the object itself unless `expand_includes=true`; the response then names the includes that the expansion would also search. Falls back to a literal search when the pattern is not valid regex. |
 | `lineStart` | integer | No | First source line (1-based, inclusive); requires `lineEnd`. Supports PROG, CLAS, INTF, FUNC, INCL, DDLS, DCLS, BDEF, SRVD, DDLX and TABL. CLAS `include` selects one source section. Plain text only: do not combine with grep, method, diff, structured/editable output, signature or element extraction. Draft/version notices precede the numbered source. |
 | `lineEnd` | integer | No | Last source line (inclusive); requires `lineStart`. Clamped to the source end; a start beyond the source is an error. |
-| `expand_includes` | boolean | No | For FUGR: expand include source inline, up to 80 source blocks (including main) and five include levels. `grep` implies this expansion; see [Function-group source search](#function-group-source-search). |
+| `expand_includes` | boolean | No | For FUGR: expand include source inline, up to 80 source blocks (including main) and five include levels. `grep` implies this expansion; see [Function-group source search](#function-group-source-search). For PROG and INCL: read the program with every include it names, recursively, in one bounded call, or search them all with `grep`; see [Program include expansion](#program-include-expansion). |
 | `group` | string | No | For FUNC, and for VERSIONS or API_STATE with `objectType="FUNC"`: function group name; resolved through search when omitted, including namespaced functions and SAP_BASIS 750's decorated search names. |
 | `versionUri` | string | No | For VERSION_SOURCE: canonical source/revision URI from a VERSIONS response (`revisions[].uri`). Only known source endpoint shapes are accepted; unrelated ADT endpoints, absolute URLs, authority changes, dot segments, queries, fragments, controls, encoded backslashes, and ambiguous nested encodings are rejected. Encoded slashes remain valid inside namespaced ABAP object names. |
 | `maxRows` | number | No | For TABLE_CONTENTS/TABLE_QUERY: requested row cap (default 100, clamped to 10,000). Wide results can hit the server's cumulative byte ceiling at fewer rows. For TABLE_CONTENTS, SAP can return `N+1` (observed on 758 and BTP ABAP); prefer TABLE_QUERY when an exact cap matters. |
@@ -207,6 +207,8 @@ SAPRead(type="CLAS", name="ZCL_ORDER", method="setup", include="testclasses") �
 SAPRead(type="CLAS", name="ZCL_ORDER", grep="select.*from")  — matching lines only, annotated by method
 SAPRead(type="CLAS", name="ZCL_ORDER", include="text_symbols") — maintained text pool (see Text elements)
 SAPRead(type="PROG", name="ZTEST_REPORT", grep="WRITE")      — search source, returns matches + context
+SAPRead(type="PROG", name="ZTEST_REPORT", expand_includes=true) — the whole report with its includes (TOP, F01, …), bounded
+SAPRead(type="PROG", name="ZTEST_REPORT", expand_includes=true, grep="AUTHORITY-CHECK") — matches in every include
 SAPRead(type="PROG", name="ZTEST_REPORT", lineStart=40, lineEnd=55) — raw line window, e.g. around an ATC finding
 SAPRead(type="DDLS", name="ZI_TRAVEL", include="elements")   — extract CDS view elements
 SAPRead(type="DCLS", name="ZI_TRAVEL_DCL")       — CDS access control source
@@ -265,6 +267,53 @@ read. A partial search cannot establish that the whole group has no matches: lar
 can hit the limit before reaching function-module bodies. Follow up with a known include,
 `SAPRead(type="INCL", name="LZUTILSU01", grep="...")`, or a function module,
 `SAPRead(type="FUNC", group="ZUTILS", name="Z_UTIL", grep="...")`.
+
+### Program include expansion
+
+`SAPRead(type="PROG", name="ZREPORT", expand_includes=true)` reads a report and every include
+its INCLUDE statements name, recursively, each under a heading that names the source and line
+including it, such as `=== zreport_f01 (ZREPORT line 12) ===`; `type="INCL"` does the same from
+an include. Customer includes are read first, also those found inside an SAP include; within
+customer and other includes the read is breadth-first in the order the includes were found, so
+the order is the same on every call. ARC-1 finds INCLUDE
+statements with the abaplint parser: chains (`INCLUDE: a, b.`), `IF FOUND`, comments and
+literals are handled, and `INCLUDE TYPE`/`INCLUDE STRUCTURE` are type includes, not followed.
+With `grep`, each source is searched on its own, as for function groups; without
+`expand_includes`, a PROG or INCL `grep` searches the object alone and names the includes it
+did not search that the expansion would read.
+
+Customer includes (`Z*`, `Y*`, `MZ*`, `SAPMZ*`, …) are always read. SAP includes are read
+only under an SAP program (reading `SAPMV45A` reads its SAP includes, a `Z` report lists
+`LSVIMTDT` without reading it), includes of a `/NAMESPACE/` only under a program of the same
+namespace, and `<...>` system includes (`<ICON>`, `<LIST>`, …) never. Customer code is
+recognized by name only (`Z`/`Y` and the forms above; a customer namespace cannot be told apart
+from an SAP or partner one by its name). Customer code in an SAP-named include, such as a user exit
+like `MV45AFZZ` or a modified SAP include, therefore counts as SAP code: it is not read under a `Z`
+program, and under an SAP program it is read with the SAP includes, after the customer includes.
+A customer's own namespace under a `Z` program is listed, not read. Enhancement implementations are
+not INCLUDE statements and are not part of the expansion.
+
+A read stops at five include levels, 80 sources (the program included; an `IF FOUND` include that
+does not exist counts as one), 20 seconds for reading the program and its includes, and 40,000
+characters of source for text output; grep reads up to 4,000,000 characters but returns only
+matches. The lookup of inactive objects that source reads
+make first, to detect drafts, is not part of the 20 seconds. The 40,000 characters keep a
+response inline in MCP clients: comment-heavy SAP code tokenizes far below four characters per
+token, and a client with a 25,000-token result limit refused an 81,000-character expansion of
+`SAPMV45A` and saved a 62 KB one to a file. The source that crosses the character limit ends
+with `[... lines N-M not shown (character limit)]`.
+
+A closing `=== [include expansion] ===` note names every include that is not shown in full,
+with the line of its INCLUDE statement, customer code first: includes a limit left unread,
+includes that could not be read (with the HTTP status), `INCLUDE ... IF FOUND` includes that do
+not exist, cycles, then includes of another namespace, SAP includes and system includes. Read
+any of them with `SAPRead(type="INCL", name="...")`, and the rest of a shortened one with
+`lineStart`/`lineEnd`. Each include follows the version rule of the program:
+`version="active"` (the default) reads every source active; `auto` reads a source from your
+unactivated draft where your inactive objects list one, and the active source otherwise;
+`inactive` asks SAP for every source's inactive version, which is the active source where none
+exists. A block read from one of your drafts is marked `(inactive draft)` in its heading. The
+expansion is refused where `SAP_DENY_ACTIONS` denies `SAPRead.INCL`.
 
 ### Enhancement reads
 

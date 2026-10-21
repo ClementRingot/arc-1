@@ -87,7 +87,7 @@ sequence.
 | [FEAT-85](#feat-85) | Set the ABAP language version of packages and objects | P1 | M | Needs research | ABAP authoring |
 | [FEAT-05](#feat-05) | Safe rename and extract refactorings | P3 | L | Needs research | Developer workflow |
 | [FEAT-21](#feat-21) | ABAP F1 documentation | P3 | S | Needs research | Developer workflow |
-| [FEAT-23](#feat-23) | Recursive program include reading | P2 | M | Needs research | Developer workflow |
+| [FEAT-92](#feat-92) | Function-group include expansion on the program walker | P2 | S | Ready | Developer workflow |
 | [FEAT-30](#feat-30) | ABAP cleaner integration | P3 | L | Revisit on trigger | Developer workflow |
 | [FEAT-66](#feat-66) | Interactive confirmation for destructive actions | P3 | L | Blocked | Safety / UX |
 | [FEAT-75](#feat-75) | Delete mutually-referencing objects as one set | P2 | S | Ready | Developer workflow |
@@ -528,22 +528,25 @@ release-sensitive. Generic web links would add little over existing model knowle
 **Resume with.** Demonstrate one discovery-advertised, structured endpoint on multiple supported
 releases and define a useful fallback when documentation is unavailable.
 
-<a id="feat-23"></a>
-### FEAT-23 — Recursive program include reading
+<a id="feat-92"></a>
+### FEAT-92 — Function-group include expansion on the program walker
 
-- **Priority / effort / status:** P2 / M / Needs research
+- **Priority / effort / status:** P2 / S / Ready
 - **Category:** Developer workflow
 
-**Idea.** Read a program and its nested includes in one bounded response through `SAPRead`.
+**Idea.** Read function groups with the bounded walker that `expand_includes` uses for PROG and INCL,
+so that one parameter has one traversal.
 
-**Why it remains.** Function-group expansion is implemented, but `expand_includes` currently applies
-only to FUGR. `SAPContext` extracts class, type, and function dependencies; it does not recursively
-resolve program `INCLUDE` statements. Reading each include manually is possible but costs multiple
-tool calls.
+**Why it remains.** `getFunctionGroupExpanded` finds includes with a regex: it misses
+`INCLUDE … IF FOUND` and chained `INCLUDE: a, b.`, follows INCLUDE text inside `"` comments and
+literals, reads the SAP includes of customer groups (a table-maintenance group on SAP_BASIS 7.50
+returned 80 sources, nearly all `LSVIM*`, where the program walker read 8 customer sources), and has
+neither a time nor a size limit. The program walker was kept separate so that function-group output
+did not change in the same pull request.
 
-**Resume with.** Validate include discovery on supported on-premise releases, then extend the
-existing read tool with cycle detection, depth/object/byte limits, source boundaries, and explicit
-truncation. Reuse the function-group traversal where appropriate.
+**Resume with.** Move FUGR onto the program walker (root: the group's main program), keep the
+`getFunctionGroupExpanded` result shape for extensions, and document the changed output: ownership
+rule, 40,000-character text limit, deadline, and the closing note instead of `[truncated]`.
 
 <a id="feat-30"></a>
 ### FEAT-30 — ABAP cleaner integration
