@@ -214,6 +214,23 @@ export const TOOL_SCHEMA_SCENARIOS: ToolSchemaScenario[] = [
     },
   },
   {
+    name: 'standard-full-debug',
+    config: { ...FULL_ACCESS_CONFIG, allowDebug: true },
+    textSearchAvailable: true,
+    resolvedFeatures: ALL_FEATURES_AVAILABLE,
+    budget: {
+      // The opt-in SAPDiagnose action="debug" (SAP_ALLOW_DEBUG) on top of the full write surface:
+      // ~1.3 KB / 7 property descriptions, listed only when an admin enables debugger captures.
+      // Measured 71.7 KB / ~17.9k schema tokens / 272 descriptions — the debug texts were trimmed to
+      // stay under the 72 KB wall; trim them again (not the wall) if the full surface grows.
+      schemaTokenEstimate: 18_000,
+      descriptionTokenEstimate: 12_700,
+      descriptionCount: 275,
+      maxTotalWireBytes: WRITE_WIRE_WALL,
+      maxPerToolWireBytes: PER_TOOL_WIRE_WALL,
+    },
+  },
+  {
     name: 'hyperfocused-default',
     config: { ...DEFAULT_CONFIG, toolMode: 'hyperfocused' },
     textSearchAvailable: true,

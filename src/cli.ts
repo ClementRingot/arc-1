@@ -804,6 +804,7 @@ export function createCliProgram(options: CreateCliProgramOptions = {}): Command
                 allowFreeSQL: config.allowFreeSQL,
                 allowTransportWrites: config.allowTransportWrites,
                 allowGitWrites: config.allowGitWrites,
+                allowDebug: config.allowDebug,
                 allowedPackages: config.allowedPackages,
                 allowedTransports: config.allowedTransports,
                 denyActions: config.denyActions,
@@ -825,6 +826,7 @@ export function createCliProgram(options: CreateCliProgramOptions = {}): Command
         ['allowFreeSQL', config.allowFreeSQL],
         ['allowTransportWrites', config.allowTransportWrites],
         ['allowGitWrites', config.allowGitWrites],
+        ['allowDebug', config.allowDebug],
         ['allowedPackages', JSON.stringify(config.allowedPackages)],
         ['allowedTransports', JSON.stringify(config.allowedTransports)],
       ] as const;

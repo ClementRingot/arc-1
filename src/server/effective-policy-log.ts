@@ -20,6 +20,7 @@ export function logEffectivePolicy(config: ServerConfig, sources: Record<string,
     allowFreeSQL: config.allowFreeSQL,
     allowTransportWrites: config.allowTransportWrites,
     allowGitWrites: config.allowGitWrites,
+    allowDebug: config.allowDebug,
     gzipDataPreviewBody: config.gzipDataPreviewBody,
     allowedPackages: config.allowedPackages,
     allowedTransports: config.allowedTransports,
@@ -36,7 +37,8 @@ export function logEffectivePolicy(config: ServerConfig, sources: Record<string,
     `effective safety: writes=${yn(config.allowWrites)} data=${yn(config.allowDataPreview)} ` +
     `sql=${yn(config.allowFreeSQL)} packages=[${config.allowedPackages.join(',')}] ` +
     `transports=${yn(config.allowTransportWrites)} git=${yn(config.allowGitWrites)} ` +
-    `gzipDataPreview=${yn(config.gzipDataPreviewBody)} denyActions=${config.denyActions.length}`;
+    `debug=${yn(config.allowDebug)} gzipDataPreview=${yn(config.gzipDataPreviewBody)} ` +
+    `denyActions=${config.denyActions.length}`;
   logger.info(line);
 
   // Per-field source attribution — debug-level detail for "where did this value come from?"
@@ -55,6 +57,7 @@ export function logEffectivePolicy(config: ServerConfig, sources: Record<string,
     'allowFreeSQL',
     'allowTransportWrites',
     'allowGitWrites',
+    'allowDebug',
     'gzipDataPreviewBody',
     'allowedPackages',
     'allowedTransports',
@@ -86,6 +89,12 @@ export function detectContradictions(config: ServerConfig): string[] {
 
   if (config.allowGitWrites && !config.allowWrites) {
     warnings.push('allowGitWrites=true has no effect when allowWrites=false; git writes will be blocked.');
+  }
+
+  if (config.allowDebug && !config.allowDataPreview) {
+    warnings.push(
+      'allowDebug=true has no effect when allowDataPreview=false; debugger captures expose variable values and will be blocked.',
+    );
   }
 
   if (config.gzipDataPreviewBody && !config.allowDataPreview && !config.allowFreeSQL) {

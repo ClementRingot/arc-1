@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 import type { ResolvedFeatures } from '../../../src/adt/types.js';
 import { getToolDefinitions } from '../../../src/handlers/tools.js';
 import type { ServerConfig } from '../../../src/server/types.js';
-import { btp, FULL, features, onprem } from './handler-test-config.js';
+import { btp, FULL, FULL_DEBUG, features, onprem } from './handler-test-config.js';
 
 interface Variant {
   name: string;
@@ -70,6 +70,13 @@ const VARIANTS: Variant[] = [
   {
     name: 'onprem-full-transport-off',
     config: onprem({ ...FULL, featureTransport: 'off' }),
+    textSearchAvailable: true,
+    resolvedFeatures: features(),
+  },
+  // Opt-in gate: SAPDiagnose action="debug" + its properties appear only with SAP_ALLOW_DEBUG.
+  {
+    name: 'onprem-full-debug',
+    config: onprem(FULL_DEBUG),
     textSearchAvailable: true,
     resolvedFeatures: features(),
   },

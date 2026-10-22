@@ -74,7 +74,17 @@ const MULTI_TARGET_ACTION_RULES = new Map<
         'sql_trace_directory',
         'authorization_trace',
       ]),
-      omittedProperties: new Set(),
+      // `debug` is outside the reviewed multi-target surface (it suspends a work process); its
+      // properties only exist when SAP_ALLOW_DEBUG is on and would point the model at a refusal.
+      omittedProperties: new Set([
+        'method',
+        'include',
+        'exceptionClass',
+        'trigger',
+        'triggerName',
+        'variables',
+        'steps',
+      ]),
     },
   ],
 ]);

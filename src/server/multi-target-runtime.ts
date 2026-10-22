@@ -41,6 +41,9 @@ function buildReadOnlyRuntimeConfig(
     allowFreeSQL: safety.allowFreeSQL,
     allowTransportWrites: safety.allowTransportWrites,
     allowGitWrites: safety.allowGitWrites,
+    // Never inherited: debugger captures suspend a work process and are outside the ADR-0006
+    // mutation-free multi-target surface (SAPDiagnose.debug is also absent from its allowlist).
+    allowDebug: false,
     allowedPackages: [...safety.allowedPackages],
     allowedTransports: [...safety.allowedTransports],
     denyActions: [...new Set([...base.denyActions, ...safety.denyActions])],

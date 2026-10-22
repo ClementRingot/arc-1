@@ -58,6 +58,9 @@ export interface ServerConfig {
   allowFreeSQL: boolean;
   allowTransportWrites: boolean;
   allowGitWrites: boolean;
+  /** Opt-in (SAP_ALLOW_DEBUG): SAPDiagnose action="debug" one-shot debugger captures. Also needs
+   *  allowDataPreview (variable values are data) and the `data` scope. Default false. */
+  allowDebug: boolean;
   allowedPackages: string[];
   allowedTransports: string[];
   /** Resolved deny-action patterns from SAP_DENY_ACTIONS (parsed + validated at startup). */
@@ -263,6 +266,7 @@ export const DEFAULT_CONFIG: ServerConfig = {
   allowFreeSQL: false,
   allowTransportWrites: false,
   allowGitWrites: false,
+  allowDebug: false,
   allowedPackages: ['$TMP'],
   allowedTransports: [],
   denyActions: [],

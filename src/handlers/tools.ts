@@ -33,6 +33,7 @@ import {
   SAPWRITE_TYPES_BTP,
   SAPWRITE_TYPES_ONPREM,
 } from './tool-registry.js';
+import { isDebugActionVisible, SAPDIAGNOSE_DEBUG_DESCRIPTION, SAPDIAGNOSE_DEBUG_PROPERTIES } from './tools-debug.js';
 
 /** MCP tool behavior annotations (a subset of the spec; all optional, all advisory hints). */
 export interface ToolAnnotations {
@@ -1102,6 +1103,7 @@ export function getToolDefinitions(
         '- "authorization_trace": read the on-prem STUSERTRACE auth trace (SUAUTHVALTRC); needs SAP_ALLOW_DATA_PREVIEW.\n' +
         '- "cds_sql": show the native SQL a CDS view compiles to (name; read-only).\n' +
         '- "sql_trace_state" / "set_sql_trace_state" (sqlOn; needs SAP_ALLOW_WRITES) / "sql_trace_directory": ST05 SQL-trace control.\n' +
+        (isDebugActionVisible(config) ? SAPDIAGNOSE_DEBUG_DESCRIPTION : '') +
         'Quickfix workflow: syntax/ATC → quickfix → apply_quickfix → write via SAPWrite. Full action reference: docs_page SAPDiagnose.',
       inputSchema: {
         type: 'object',
@@ -1130,6 +1132,7 @@ export function getToolDefinitions(
               'set_sql_trace_state',
               'sql_trace_directory',
               'authorization_trace',
+              ...(isDebugActionVisible(config) ? ['debug'] : []),
             ],
           },
           name: {
@@ -1308,6 +1311,7 @@ export function getToolDefinitions(
             type: 'string',
             description: 'For trace_start: optional label for the trace request.',
           },
+          ...(isDebugActionVisible(config) ? SAPDIAGNOSE_DEBUG_PROPERTIES : {}),
         },
         required: ['action'],
       },

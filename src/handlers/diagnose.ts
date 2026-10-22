@@ -63,6 +63,7 @@ import type {
   TraceRequestCreateOptions,
   UnitTestResult,
 } from '../adt/types.js';
+import { handleDebugCapture } from './debug.js';
 import { isBtpSystem } from './feature-cache.js';
 import { classIncludeUrl, normalizeObjectType, objectUrlForType, sourceUrlForType } from './object-types.js';
 import { errorResult, type ToolResult, textResult, toolJson } from './shared.js';
@@ -1176,6 +1177,8 @@ export async function handleSAPDiagnose(client: AdtClient, args: Record<string, 
       const dir = await getSqlTraceDirectory(client.http, client.safety);
       return textResult(toolJson(dir));
     }
+    case 'debug':
+      return handleDebugCapture(client, args, type, name);
     case 'authorization_trace': {
       const user = String(args.user ?? '').trim() || undefined;
       const authObject = String(args.authObject ?? '').trim() || undefined;

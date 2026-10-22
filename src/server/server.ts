@@ -226,6 +226,7 @@ export function buildAdtConfig(
       allowFreeSQL: config.allowFreeSQL,
       allowTransportWrites: config.allowTransportWrites,
       allowGitWrites: config.allowGitWrites,
+      allowDebug: config.allowDebug,
       allowedPackages: config.allowedPackages,
       allowedTransports: config.allowedTransports,
       denyActions: config.denyActions,

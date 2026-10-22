@@ -784,6 +784,7 @@ export function multiTargetSafety(policy: TargetPolicy): SafetyConfig {
     allowFreeSQL: policy.allowFreeSQL,
     allowTransportWrites: false,
     allowGitWrites: false,
+    allowDebug: false,
     allowedPackages: ['$TMP'],
     allowedTransports: [],
     denyActions: [],

@@ -90,6 +90,7 @@ Use this table to answer: "what must be true before this action can run?" For HT
 | Read Git info | `read` | Nothing | `SAPGit.list_repos`, `history`, `objects`, etc. when Git feature exists |
 | Preview named table contents | `data` | `SAP_ALLOW_DATA_PREVIEW=true` | `sql` implies `data` |
 | Authorization trace (`SUAUTHVALTRC`) | `data` | `SAP_ALLOW_DATA_PREVIEW=true` | `SAPDiagnose action=authorization_trace`; on-prem STUSERTRACE read only |
+| One-shot debugger capture | `data` | `SAP_ALLOW_DEBUG=true` + `SAP_ALLOW_DATA_PREVIEW=true` | `SAPDiagnose action=debug`: reads runtime variable values and briefly suspends a run of the **logon user's** own session (never another user's). SAP also needs debug authorization (`S_DEVELOP` with `OBJTYPE=DEBUG`, display). Not available in multi-target mode. |
 | Run freestyle SQL | `sql` | `SAP_ALLOW_FREE_SQL=true` | High risk on productive systems |
 | Create / update / delete objects | `write` | `SAP_ALLOW_WRITES=true` | `SAP_ALLOWED_PACKAGES` applies; supports exact (`ZFOO`), prefix (`Z*`), and DEVCLASS subtree (`ZFOO/**`) patterns. Subtree resolution is fail-closed on SAP errors. |
 | Activate objects | `write` | `SAP_ALLOW_WRITES=true` | Activation is a mutation |
@@ -345,6 +346,7 @@ Then assign role collections in BTP Cockpit. The server says what the instance c
 | `allowGitWrites=false` | Server ceiling | Set `SAP_ALLOW_GIT_WRITES=true` and `SAP_ALLOW_WRITES=true` |
 | `allowDataPreview=false` | Server ceiling | Set `SAP_ALLOW_DATA_PREVIEW=true` |
 | `allowFreeSQL=false` | Server ceiling | Set `SAP_ALLOW_FREE_SQL=true` |
+| `allowDebug=false` | Server ceiling | Set `SAP_ALLOW_DEBUG=true` (debugger captures also need `SAP_ALLOW_DATA_PREVIEW=true`) |
 | `Operations on package ... are blocked` | Server/profile safety | Adjust `SAP_ALLOWED_PACKAGES` or API-key profile choice |
 | `denied by server policy (SAP_DENY_ACTIONS)` | Deny list | Remove or narrow the deny pattern |
 | `No authorization for object ...` / SAP 403 | SAP authorization | Fix SAP user roles / PFCG / package auth |
