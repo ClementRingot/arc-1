@@ -246,6 +246,19 @@ across tool calls (#871). Each call still gets fresh object/package caches and i
 restrictions. JWT principal-propagation clients and multi-target clients do not receive this
 shared transport.
 
+Single-target Cloud Connector principal propagation reuses each user's **own** login when
+`SAP-Connectivity-Authentication` carries a JWT with a known expiry. A different credential or
+route gets a separate login. Reuse ends at ten minutes or credential expiry, whichever comes first;
+the pool retains at most 500 entries. Other PP authentication modes and multi-target routes stay
+request-local. In stderr/file audit logs, successful `auth_pp_created` events report `transportReuse`
+as `pooled-new`, `pooled-reused`, or `request-local` without exposing credentials. This tracks the
+transport, not SAP logins: a reused transport can still need to log on again after SAP ends its session.
+
+This reduces repeated logins. SAP's unused-session limit is consistent with the symptoms in
+[#1085](https://github.com/arc-mcp/arc-1/issues/1085), but that deployment's cause still needs SAP-side
+confirmation. On a cold login, other calls wait for its first response. A session reset can interrupt
+another call's CSRF bootstrap; write contexts remain separate.
+
 **Transport renewal:** once a transport is ten minutes old, a new HTTP request gets a replacement.
 Requests already created retain the old one, so lock/save/unlock and late responses stay together.
 The age is measured with a monotonic clock. Renewal can add authentication/CSRF requests and latency;
@@ -270,7 +283,10 @@ the affected HTTP security sessions (SM05) and address outstanding SSO tickets u
 incident procedure. Restarting ARC-1 discards its in-memory cookies; it does not revoke tickets
 copied elsewhere. Replace configured cookie files/strings too if using the development SSO bridge.
 ARC-1's existing 401 recovery is not a revocation mechanism and does not guarantee automatic
-recovery of a write.
+recovery of a write. For principal propagation, lock the user in SAP and terminate their HTTP
+security sessions (SM05). Unmapping alone may leave an issued SSO ticket usable; ending sessions
+alone lets a still-authorized user log on again.
+Revoke BTP access too; already-issued tokens and admitted calls may remain valid.
 
 SAP recommends `login/create_sso2_ticket=3` to issue assertion tickets without logon tickets, but
 legacy SSO consumers may require `2`. Have the SAP owner assess that landscape-wide setting
