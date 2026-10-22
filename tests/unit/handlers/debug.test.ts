@@ -12,7 +12,7 @@ import { mockResponse } from '../../helpers/mock-fetch.js';
 import { AdtClient, createClient, mockFetch } from './setup-undici-mock.js';
 
 const { handleToolCall } = await import('../../../src/handlers/dispatch.js');
-const { setDebugTimingsForTests } = await import('../../../src/handlers/debug.js');
+const { maxParallelCaptures, setDebugTimingsForTests } = await import('../../../src/handlers/debug.js');
 
 const CONFIG = { ...DEFAULT_CONFIG, allowDataPreview: true, allowDebug: true };
 
@@ -88,6 +88,8 @@ interface FakeSapOptions {
   conflict?: boolean;
   /** SAP refuses breakpoints (the user lacks debug authorization). */
   breakpointsForbidden?: boolean;
+  /** systeminformation names this session user; unset = the resource is absent (404, SAP_BASIS <= 7.50). */
+  sessionUser?: string;
 }
 
 function installFakeSap(options: FakeSapOptions = {}) {
@@ -125,6 +127,11 @@ function installFakeSap(options: FakeSapOptions = {}) {
 
       if (method === 'HEAD' && path === '/sap/bc/adt/core/discovery')
         return mockResponse(200, '', { 'x-csrf-token': 'T' });
+      if (method === 'GET' && path === '/sap/bc/adt/core/http/systeminformation' && options.sessionUser)
+        return mockResponse(
+          200,
+          JSON.stringify({ systemID: 'A4H', client: '001', userName: options.sessionUser, language: 'EN' }),
+        );
       if (method === 'GET' && path === '/sap/bc/adt/oo/classes/zcl_order/source/main')
         return mockResponse(200, CLASS_SOURCE);
       if (path === '/sap/bc/adt/debugger/listeners') {
@@ -421,14 +428,76 @@ describe('SAPDiagnose action="debug" — no hit', () => {
   });
 });
 
+describe('SAPDiagnose action="debug" — whose run is caught', () => {
+  /** A per-user client as principal propagation builds it: a token authenticates, `username` is display-only. */
+  const ppClient = (displayName: string) =>
+    new AdtClient({
+      baseUrl: 'http://sap:8000',
+      username: displayName,
+      sapConnectivityAuth: 'saml-assertion',
+      safety: unrestrictedSafetyConfig(),
+    });
+
+  it('debugs the SAP user SAP names for this session under principal propagation, not the JWT name', async () => {
+    const { calls } = installFakeSap({ hit: false, sessionUser: 'pp_user' });
+    const { result, json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 }, ppClient('JDOE'));
+    expect(result.isError).toBeFalsy();
+    expect(json?.user).toBe('PP_USER');
+    expect(calls[0]).toMatchObject({ method: 'GET', path: '/sap/bc/adt/core/http/systeminformation' });
+    expect(named(calls, 'POST', '/sap/bc/adt/debugger/breakpoints')[0]?.body).toContain('requestUser="PP_USER"');
+    expect(named(calls, 'POST', '/sap/bc/adt/debugger/listeners')[0]?.query.get('requestUser')).toBe('PP_USER');
+    expect(calls.some((c) => c.body.includes('JDOE') || c.query.toString().includes('JDOE'))).toBe(false);
+  });
+
+  it('refuses under principal propagation when SAP cannot name the user, instead of trusting the token', async () => {
+    const { calls } = installFakeSap();
+    const { result, text } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 }, ppClient('JDOE'));
+    expect(result.isError).toBe(true);
+    expect(text).toContain('Cannot tell which SAP user this session runs as');
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /sap/bc/adt/core/http/systeminformation']);
+  });
+
+  it("prefers SAP's answer over the configured SAP_USER", async () => {
+    const { calls } = installFakeSap({ hit: false, sessionUser: 'DEVELOPER' });
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 });
+    expect(json?.user).toBe('DEVELOPER');
+    expect(named(calls, 'POST', '/sap/bc/adt/debugger/listeners')[0]?.query.get('requestUser')).toBe('DEVELOPER');
+  });
+
+  it('falls back to SAP_USER behind Basic auth where the release lacks systeminformation', async () => {
+    const { calls } = installFakeSap({ hit: false });
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 });
+    expect(json?.user).toBe('ADMIN');
+    expect(named(calls, 'GET', '/sap/bc/adt/core/http/systeminformation')).toHaveLength(1);
+  });
+
+  it('caps parallel captures per instance at a quarter of ARC1_MAX_CONCURRENT', async () => {
+    expect([2, 3, 4, 7, 8, 10, 20].map(maxParallelCaptures)).toEqual([1, 1, 1, 1, 2, 2, 5]);
+    installFakeSap({ hit: true });
+    const withSlots = (username: string) =>
+      new AdtClient({
+        baseUrl: 'http://sap:8000',
+        username,
+        password: 'secret',
+        maxConcurrent: 4,
+        safety: unrestrictedSafetyConfig(),
+      });
+    const first = debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 }, withSlots('admin'));
+    const second = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 }, withSlots('other'));
+    expect(second.result.isError).toBe(true);
+    expect(second.text).toContain('at most 1, a quarter of ARC1_MAX_CONCURRENT=4');
+    expect((await first).json?.hit).toBe(true);
+  });
+});
+
 describe('SAPDiagnose action="debug" — gates and input', () => {
   it('refuses when the SAP logon user is unknown (no requestUser can be sent)', async () => {
-    installFakeSap();
+    const { calls } = installFakeSap();
     const client = new AdtClient({ baseUrl: 'http://sap:8000', safety: unrestrictedSafetyConfig() });
     const { result, text } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 }, client);
     expect(result.isError).toBe(true);
-    expect(text).toContain('SAP logon user is unknown');
-    expect(mockFetch).not.toHaveBeenCalled();
+    expect(text).toContain('Cannot tell which SAP user this session runs as');
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /sap/bc/adt/core/http/systeminformation']);
   });
 
   it('is blocked by the safety ceiling without SAP_ALLOW_DEBUG', async () => {

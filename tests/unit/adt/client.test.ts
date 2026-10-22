@@ -1793,6 +1793,28 @@ describe('AdtClient', () => {
     });
   });
 
+  describe('usernameIsLogonUser (is `username` the SAP logon user or a display name?)', () => {
+    const base = { baseUrl: 'http://sap:8000', safety: unrestrictedSafetyConfig() };
+
+    it('is true for Basic auth and for SAP_USER beside operator cookies', () => {
+      expect(new AdtClient({ ...base, username: 'admin', password: 'secret' }).usernameIsLogonUser).toBe(true);
+      expect(new AdtClient({ ...base, username: 'admin', cookieString: 'MYSAPSSO2=x' }).usernameIsLogonUser).toBe(true);
+      expect(
+        new AdtClient({ ...base, username: 'admin', password: 'secret' }).withSafety(unrestrictedSafetyConfig())
+          .usernameIsLogonUser,
+      ).toBe(true);
+    });
+
+    it('is false when per-user tokens authenticate and `username` is only a JWT display claim', () => {
+      const display = { ...base, username: 'JDOE' };
+      expect(new AdtClient({ ...display, ppProxyAuth: 'Bearer pp' }).usernameIsLogonUser).toBe(false);
+      expect(new AdtClient({ ...display, sapConnectivityAuth: 'saml' }).usernameIsLogonUser).toBe(false);
+      expect(new AdtClient({ ...display, samlAuthorization: 'SAML2.0 x' }).usernameIsLogonUser).toBe(false);
+      expect(new AdtClient({ ...display, bearerTokenProvider: async () => 'jwt' }).usernameIsLogonUser).toBe(false);
+      expect(new AdtClient(base).usernameIsLogonUser).toBe(false);
+    });
+  });
+
   describe('withSafety', () => {
     it('returns a new client with the given safety config', () => {
       const client = createClient();

@@ -35,6 +35,7 @@ import { assertODataPerfUrl } from '../adt/diagnostics.js';
 import { AdtApiError } from '../adt/errors.js';
 import { mapSapReleaseToAbaplintVersion } from '../adt/features.js';
 import { checkDebug, checkOperation, OperationType } from '../adt/safety.js';
+import { getSessionUser, isPlausibleSapUser } from '../adt/session-user.js';
 import { extractMethod } from '../context/method-surgery.js';
 import { getCachedFeatures } from './feature-cache.js';
 import { detectLocalHandlerInclude, objectUrlForType } from './object-types.js';
@@ -70,7 +71,7 @@ export function setDebugTimingsForTests(overrides: Partial<typeof timings>): voi
   Object.assign(timings, overrides);
 }
 
-/** Captures in flight in this process, by SAP user — one at a time per user. */
+/** Captures in flight in this process, by SAP user: one at a time per user, `maxParallelCaptures` in all. */
 const activeCaptures = new Set<string>();
 
 class DebugInputError extends Error {}
@@ -115,13 +116,27 @@ function readRequest(args: Record<string, unknown>, type: string, name: string):
 }
 
 /**
- * The SAP user to debug: the logon user, never a caller-supplied one. Known for Basic auth
- * (SAP_USER) and, on BTP, once a cloud create taught ARC-1 the internal user. An empty or wrong
- * `requestUser` makes SAP's listener silently match nothing, so unknown means refuse.
+ * The SAP user to debug: the session's own logon user, never a caller-supplied one. SAP names it
+ * first, inside this very session (systeminformation): under principal propagation that is the
+ * MCP user's own propagated SAP user. Where the release lacks that resource (SAP_BASIS 7.50 and
+ * older) only identities that ARE the logon user count: SAP_USER behind Basic auth or operator
+ * cookies, or the internal user a cloud create taught ARC-1, never a JWT display name. An empty or
+ * wrong `requestUser` makes SAP's listener match nothing (or someone else), so unknown means refuse.
  */
-export function resolveDebugUser(client: AdtClient): string | undefined {
-  const user = (client.username || client.getInternalUser() || '').trim().toUpperCase();
-  return /^[^\s@]{1,12}$/.test(user) ? user : undefined;
+export async function resolveDebugUser(client: AdtClient): Promise<string | undefined> {
+  const fromSap = await getSessionUser(client.http, client.safety);
+  if (fromSap) return fromSap;
+  const known = ((client.usernameIsLogonUser ? client.username : '') || client.getInternalUser() || '')
+    .trim()
+    .toUpperCase();
+  return isPlausibleSapUser(known) ? known : undefined;
+}
+
+/** A capture holds up to two SAP request slots (listener or inspection, plus the trigger), so at most
+ *  a quarter of ARC1_MAX_CONCURRENT captures run at once: debugging never takes more than half of
+ *  the slots every MCP user of the instance shares. */
+export function maxParallelCaptures(slots: number): number {
+  return Math.max(1, Math.floor(slots / 4));
 }
 
 // ─── Breakpoint location ───────────────────────────────────────────
@@ -866,21 +881,28 @@ export async function handleDebugCapture(
   name: string,
 ): Promise<ToolResult> {
   checkDebug(client.safety, 'DebugCapture');
-  const user = resolveDebugUser(client);
-  if (!user) {
-    return errorResult(
-      "The SAP logon user is unknown in this authentication mode, and SAP's debugger needs it (requestUser) to catch anything. Set SAP_USER to the logon user (Basic auth, or alongside cookie auth); principal propagation and BTP OAuth sessions are not supported yet.",
-    );
-  }
   const semaphore = client.http.semaphore;
   if (semaphore && semaphore.max < 2) {
     return errorResult(
       `A debug capture holds one SAP request open (the listener) while the trigger runs, so it needs ARC1_MAX_CONCURRENT >= 2 (currently ${semaphore.max}).`,
     );
   }
+  const user = await resolveDebugUser(client);
+  if (!user) {
+    return errorResult(
+      "Cannot tell which SAP user this session runs as, and SAP's debugger needs that logon user (requestUser) to catch anything. SAP did not name it (/sap/bc/adt/core/http/systeminformation is missing on SAP_BASIS 7.50 and older); there, only SAP_USER with Basic or cookie auth identifies it — under principal propagation ARC-1 refuses rather than guess from the token.",
+    );
+  }
+  // From here to activeCaptures.add() nothing awaits, so the checks and the claim are atomic.
   if (activeCaptures.has(user)) {
     return errorResult(
       `A debug capture for SAP user ${user} is already running on this ARC-1 instance — wait for it to finish.`,
+    );
+  }
+  const limit = semaphore ? maxParallelCaptures(semaphore.max) : Number.POSITIVE_INFINITY;
+  if (activeCaptures.size >= limit) {
+    return errorResult(
+      `Debugging is at its limit on this ARC-1 instance (${activeCaptures.size} capture(s) running; at most ${limit}, a quarter of ARC1_MAX_CONCURRENT=${semaphore?.max}, so debugging never holds more than half of the SAP request slots everyone shares) — retry when one finishes.`,
     );
   }
   activeCaptures.add(user);

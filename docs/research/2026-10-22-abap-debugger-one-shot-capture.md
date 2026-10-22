@@ -41,9 +41,9 @@ Sources: **A** = abap-adt-api 9.2.0 `build/api/debugger.js` + `AdtClient.js`; **
 Every listener/breakpoint request carries `debuggingMode=user`, `requestUser=<SAP user, upper case>`,
 `terminalId`, `ideId` (A, S). In user mode SAP keys the **listener** by user alone — `ABDBG_LISTENER`
 holds `IDE_ID=<user>`, `TERMINAL_ID='%_USER'` (S). **`requestUser` must be the real SAP logon user:** an
-empty user registers a listener that "matches nothing — it waits out its whole timeout" (S). There is no
-on-prem whoami endpoint (`docs/research/issues/636-…`), so ARC-1 can only debug when it knows the user
-(§7.3).
+empty user registers a listener that "matches nothing — it waits out its whole timeout" (S). ARC-1
+asks SAP for the session's user (`/sap/bc/adt/core/http/systeminformation`, absent on SAP_BASIS 7.50
+and older) and refuses when neither SAP nor an authoritative configuration names it (§7.3).
 
 ### 3.2 Breakpoints — `POST /sap/bc/adt/debugger/breakpoints`
 
@@ -157,7 +157,8 @@ model needs must be asked for up front (`variables`, `steps`), which also keeps 
 | `steps` | 0–20 `stepOver`s after the stop, each recording position + `variables`. |
 | `timeoutSeconds` | How long to wait for the hit (1–240, default 60). |
 
-Flow: resolve user → per-user in-process mutex → conflict check → set breakpoints (fresh `ideId`,
+Flow: ask SAP who the session is (§7.3) → per-user in-process mutex + per-instance capture cap →
+conflict check → set breakpoints (fresh `ideId`,
 full sync) → start the long poll (stateless) → arm delay → start the trigger → race (hit / trigger
 finished / timeout) → attach + stack + variables + steps on one `withStatefulSession` → release
 (clear session breakpoints, `stepContinue` until ended; `terminateDebuggee` only as last resort) →
@@ -171,7 +172,7 @@ components, first table rows; values truncated), `steps`, `release`, `trigger` (
 
 | Area | Files |
 |---|---|
-| ADT client | new `src/adt/debugger.ts` (builders, parsers, listener/session ops, release) |
+| ADT client | new `src/adt/debugger.ts` (builders, parsers, listener/session ops, release); new `src/adt/session-user.ts` (systeminformation "who am I"); `src/adt/client.ts` (`usernameIsLogonUser`) |
 | Handler | new `src/handlers/debug.ts` (orchestration), `src/handlers/diagnose.ts` (`case 'debug'`) |
 | Schema | `src/handlers/schemas.ts` (Zod + refinements), `src/handlers/tools.ts` + new `src/handlers/tools-debug.ts` (JSON schema, listed only when enabled) |
 | Policy / safety | `src/authz/policy.ts` (`SAPDiagnose.debug` → `data` / Query), `src/adt/safety.ts` (`allowDebug`, `checkDebug`, scope/profile derivation), `src/server/{types,config,server,effective-policy-log,ui-state,multi-target-runtime,destination-registry}.ts`, `src/cli.ts` |
@@ -200,9 +201,35 @@ components, first table rows; values truncated), `steps`, `release`, `trigger` (
 
 ### 7.3 Who the debug user is
 
-`SAP_USER` (Basic auth), else the internal BTP user learned from a cloud create. Principal propagation,
-cookie and BTP OAuth sessions without either are **refused with an explicit message** rather than
-guessed — an empty or wrong `requestUser` makes the listener silently match nothing.
+Always the session's own logon user, never a value from the model or from a token claim:
+
+1. **SAP names it.** `GET /sap/bc/adt/core/http/systeminformation` with
+   `Accept: application/vnd.sap.adt.core.http.systeminformation.v1+json` answers
+   `{systemID, client, userName, userFullName, language}` for the session that asks
+   (`src/adt/session-user.ts`). It runs inside the caller's own session, so under principal
+   propagation each MCP user gets their **own propagated SAP user** (whatever the Cloud Connector /
+   `CERTRULE` mapping produced), on the BTP ABAP Environment the internal `CB99…` user, under Basic the
+   logon user. No `SAP_USER` is needed for any of them. One GET per capture, never cached (cookie
+   hot-reload can change who the session is). Evidence: SAP Fiori tools — `@sap-ux/axios-extension`
+   2.1.2, `SystemInfoService.getSystemInfo()` and `AbapServiceProvider.user()` (= the configured user,
+   else this `userName`), type `SystemInfo` in `dist/abap/types/adt-types.d.ts`; vibing-steampunk
+   `pkg/adt/identity.go` ("Eclipse ADT reads it right after logon"), absent on SAP_BASIS 7.50 and older
+   (vibing-steampunk issue #382).
+2. **Release without the resource** (404/405/406/501): only identities that *are* the logon user
+   count — `SAP_USER` behind Basic auth (SAP accepted its password) or set by the operator beside cookie
+   auth, or the internal user a cloud create taught ARC-1 (`getInternalUser`). Whenever a per-user token
+   authenticates (PP, SAML, bearer) `AdtClient.usernameIsLogonUser` is false: there `username` is a JWT
+   display claim (`user_name`/`email`) that need not match the SAP user the Cloud Connector maps to, so
+   using it could arm breakpoints for a *different* SAP user.
+3. Otherwise the capture is **refused with an explicit message**. Any other failure of the GET
+   (401/403/5xx, network) propagates rather than falling back silently.
+
+When SAP's answer and `SAP_USER` differ, SAP's answer wins: it is the user the debugger sees.
+
+Correction to earlier research: issue #636 and the BTP package-create plan concluded "no whoami
+endpoint" after probing `/sap/bc/adt/core/systeminformation` (no `/http/`), `security/users/current`,
+`system/users/me` and `/$self`; the `/http/` resource was not among them. Moving package create's
+`responsible` resolution onto it is a separate follow-up, after the §9 check.
 
 ### 7.4 Residual risks
 
@@ -215,6 +242,12 @@ guessed — an empty or wrong `requestUser` makes the listener silently match no
   re-posts its set the next time it starts listening.
 - **Work process**: a stop holds the debuggee's work process for at most `timeoutSeconds` + steps;
   the per-call budget and the release path bound it.
+- **Many users on one instance** (PP makes debugging available to every MCP user): a capture holds up
+  to two SAP request slots (the long poll or the inspection, plus the trigger), so at most
+  ⌊`ARC1_MAX_CONCURRENT`/4⌋ captures (min 1) run at once per ARC-1 instance and debugging never takes
+  more than half of the slots everyone shares. The cap is per instance; SAP's conflict check still
+  serializes one SAP user across instances. Each stop also holds one dialog work process on SAP —
+  size `rdisp/wp_no_dia` with that in mind.
 
 ## 8. Rejected alternatives
 
@@ -247,3 +280,9 @@ guessed — an empty or wrong `requestUser` makes the listener silently match no
    it is long, add an explicit "ARC-1-owned" marker (e.g. a fixed `ideId` prefix) and reclaim it.
 9. Arm delay: `timings.armDelayMs` in `src/handlers/debug.ts` (1.5 s) assumes SAP registers the listener before the trigger
    reaches the line; measure on a busy system and tune.
+10. Session user (§7.3): on 758, 816 and the BTP ABAP Environment, `systeminformation` returns
+    `userName` = the logon user; under PP with a mapping where the IdP name differs from the SAP user,
+    it returns the **mapped** SAP user. Find the first release that has it (absent on 7.50; 7.51–7.54
+    unknown) and record a real body in `tests/fixtures/`.
+11. PP through the Cloud Connector: confirm the long poll (`timeoutSeconds` + 30 s) survives the
+    connectivity proxy and Cloud Connector timeouts, or lower the maximum `timeoutSeconds` there.
