@@ -1,6 +1,6 @@
 # ARC-1 Idea Roadmap
 
-**Last reviewed:** 2026-10-21
+**Last reviewed:** 2026-10-22
 
 This page is ARC-1's idea parking lot. It records worthwhile work that is **not implemented now** so
 it does not disappear, but it is not a delivery schedule and it does not answer "what should we do
@@ -68,6 +68,7 @@ sequence.
 | [ARCH-01](#arch-01) | Discovery-driven endpoint routing | P1 | M | Ready | Architecture |
 | [ARCH-02](#arch-02) | Server-driven source-state version verification | P3 | S | Needs research | Architecture |
 | [FEAT-59](#feat-59) | Embeddable multi-tenant server API | P3 | L | Revisit on trigger | Architecture |
+| [FEAT-93](#feat-93) | Broader pinned PP mutation capabilities | P2 | XL | Needs research | Architecture |
 | [SEC-16](#sec-16) | Client ID Metadata Documents (CIMD / SEP-991) | P1 | XL | Parked proposal | Auth / Compatibility |
 | [SEC-15](#sec-15) | Durable DCR signing-key lifecycle | P2 | L | Needs research | Auth / Operations |
 | [COMPAT-06](#compat-06) | Standard outbound proxy support | P2 | M | Ready | Compatibility |
@@ -173,6 +174,30 @@ would create a public compatibility surface without a known consumer.
 
 **Resume when.** A concrete embedding customer can define lifecycle, isolation, writable-safety,
 and upgrade requirements. Do not widen the mutation-free multi-target contract as a shortcut.
+
+<a id="feat-93"></a>
+### FEAT-93 — Broader pinned PP mutation capabilities
+
+- **Priority / effort / status:** P2 / XL / Needs research
+- **Category:** Architecture
+
+**Remaining gap.** PR [#1080](https://github.com/arc-mcp/arc-1/pull/1080) implements the scoped
+CLAS/INTF create/main-update, CLAS method-edit and whole-owner activation contract for local and
+transportable packages, with exact target write grants and independent server/destination policy.
+Additional types, include editing, deletes, batches, package changes, RAP/DDIC and publication still
+need their own reviewed package, ownership, recording and activation contracts. General single-target
+parity is not implied. Aggregate and Basic writes remain rejected architectural alternatives.
+
+**Resume when.** A concrete development workflow needs one of those additional capabilities and
+its complete effect on SAP can be bounded and qualified. Extend the [ADR-0010 contract](https://github.com/arc-mcp/arc-1/blob/main/docs/adr/0010-pinned-pp-multi-target-writes.md)
+for that capability, including negative tests and live PP evidence; do not remove the explicit
+allowlist or add a second global write switch. Transport/Git management, caching, SaaS and embedding
+remain separate work. Keep operator configuration and effective-denial explanations explicit.
+
+**Prior work.** [#906](https://github.com/arc-mcp/arc-1/pull/906), the
+[alternatives assessment](https://github.com/arc-mcp/arc-1/blob/main/docs/research/2026-10-22-multi-target-write-strategy.md)
+and [V2 roadmap](https://github.com/arc-mcp/arc-1/blob/main/docs/plans/multi-target-v2-roadmap.md)
+remain design history; revalidate older gap statements against the current scoped implementation.
 
 ## Authentication, compatibility, and security
 

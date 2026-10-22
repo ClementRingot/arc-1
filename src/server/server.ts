@@ -224,6 +224,9 @@ export function buildAdtConfig(
   adtSemaphore?: Semaphore,
   dataResultSemaphore?: Semaphore,
 ): Partial<AdtClientConfig> {
+  if (config.targetId && config.multiTargetEndpoints && !config.multiTargetWrite) {
+    throw new Error('Missing multi-target write policy context');
+  }
   const adtConfig: Partial<AdtClientConfig> = {
     baseUrl: config.url,
     client: config.client,
@@ -240,6 +243,7 @@ export function buildAdtConfig(
     maxConcurrentDataResults: config.maxConcurrentDataResults,
     dataResultSemaphore,
     safety: {
+      multiTargetWrite: config.multiTargetWrite,
       allowWrites: config.allowWrites,
       allowDataPreview: config.allowDataPreview,
       allowFreeSQL: config.allowFreeSQL,
@@ -1438,7 +1442,7 @@ export async function createAndStartServer(
             authorizationMode: config.multiTargetAuthorization,
             aggregateFactory: buildAggregateServer,
             createPinnedServer: (target: TargetDescriptor, authorization?: MultiTargetRequestProjection) => {
-              const targetConfig = buildMultiTargetConfig(config, target);
+              const targetConfig = buildMultiTargetConfig(config, target, { mode: 'pinned', authorization });
               return createServer(targetConfig, {
                 btpConfig,
                 adtSemaphore,
