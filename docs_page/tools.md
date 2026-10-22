@@ -2311,7 +2311,8 @@ SAPLint(action="lint", source="...", rules={"line_length": {"severity": "Error",
 Server-side code analysis and runtime diagnostics: syntax check, ABAP unit tests, ATC checks, CDS
 test-case scaffolding, active/inactive object state, short dumps (ST22), ABAP profiler trace
 arming/list/analysis, SM02 messages, Gateway errors, the on-prem STUSERTRACE authorization trace, an
-OData performance probe (`sap-statistics`), CDS Show-SQL, and ST05 trace control.
+OData performance probe (`sap-statistics`), CDS Show-SQL, ST05 trace control, and an opt-in one-shot
+ABAP debugger capture (`debug`).
 
 Multi-target v1 includes `atc` and `unittest` under the existing `read` scope. They do not mutate
 repository objects, but they execute SAP workloads and may create transient worklists/results;
@@ -2321,19 +2322,19 @@ administrators can disable them with `SAP_DENY_ACTIONS`.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `action` | string | Yes | `syntax`, `unittest`, `unittest_ci`, `atc`, `atc_ci`, `atc_variants`, `cds_testcases`, `dumps`, `feed_schema`, `traces`, `trace_start`, `trace_requests`, `trace_cancel`, `system_messages`, `gateway_errors`, `object_state`, `quickfix`, `apply_quickfix`, `odata_perf`, `cds_sql`, `sql_trace_state`, `set_sql_trace_state`, `sql_trace_directory`, or `authorization_trace` |
+| `action` | string | Yes | `syntax`, `unittest`, `unittest_ci`, `atc`, `atc_ci`, `atc_variants`, `cds_testcases`, `dumps`, `feed_schema`, `traces`, `trace_start`, `trace_requests`, `trace_cancel`, `system_messages`, `gateway_errors`, `object_state`, `quickfix`, `apply_quickfix`, `odata_perf`, `cds_sql`, `sql_trace_state`, `set_sql_trace_state`, `sql_trace_directory`, `authorization_trace`, or `debug` (listed only when `SAP_ALLOW_DEBUG` and `SAP_ALLOW_DATA_PREVIEW` are on) |
 | `name` | string | No | Object or package name (required for unittest/object_state/quickfix/apply_quickfix, and syntax/atc without objects; the CDS entity / DDLS source name for `cds_testcases` and `cds_sql`) |
 | `objects` | array | No | ATC or syntax: 1–20 `{type,name}` entries instead of top-level `name`, `type`, or `url`. Syntax supports `CLAS`, `INTF`, `PROG`, `DDLS` only. ATC supports `CLAS`, `INTF`, `PROG`, `FUGR`, `DDLS`, `DCLS`, `BDEF`, `DDLX`, `SRVD`, `SRVB`, `TABL`, `DTEL`, `DOMA`. `TABL` includes tables and structures (`TABL/DT` and `TABL/DS` aliases). Names and type aliases are normalized. ATC duplicates execute once; syntax duplicates are rejected. No package expansion or per-item system selection. `PROG` is on-premises only. |
-| `url` | string | No | For `odata_perf`: the host-relative OData path to probe (from the Fiori app's Network tab), e.g. `/sap/opu/odata4/sap/.../Entity?$filter=...`. Must be a path on the SAP system ARC-1 connects to — absolute URLs are rejected. |
+| `url` | string | No | For `odata_perf`: the host-relative OData path to probe (from the Fiori app's Network tab), e.g. `/sap/opu/odata4/sap/.../Entity?$filter=...`. Must be a path on the SAP system ARC-1 connects to — absolute URLs are rejected. For `debug` with `trigger="http"`: the OData path ARC-1 GETs to run the code. |
 | `type` | string | No | Object type. `unittest` supports `CLAS`, `PROG`, `FUGR`, and `DEVC` (package); other actions accept their documented ADT types. |
 | `sourceUri` | string | No | Exact ADT source URI for quickfix/apply_quickfix; defaults to the type/name main source. Use it for class-local includes. |
 | `version` | string | No | For syntax: `active` (default) or `inactive`. |
 | `coverage` | boolean | No | For `unittest`: also return statement/branch/procedure coverage for the object, plus `methodsBelowFull` (methods under 100% statement coverage, worst first), in one extra round-trip. Default false. |
 | `includeSubpackages` | boolean | No | For `unittest` with `type="DEVC"`: include the package subtree. Default false selects only objects whose actual package is `name`. Rejected for other types/actions. |
 | `resultFormat` | string | No | For `unittest`: `legacy` (default), `structured`, or `junit`; JUnit uses SAP's public asynchronous AUnit endpoint when available and otherwise generates JUnit from the legacy result. For `atc`: `legacy` or `structured`; `junit` is rejected because ATC JUnit output is not implemented. Other actions reject this parameter. Dedicated CLI checks choose their required format automatically. |
-| `timeoutSeconds` | number | No | For `unittest` or `atc`: execution and verification budget; default `300`, range `1..3600`. Timeout is incomplete evidence, never a pass. For `atc_ci` / `unittest_ci`: overall budget, default `600`, range `1..3600`. |
+| `timeoutSeconds` | number | No | For `unittest` or `atc`: execution and verification budget; default `300`, range `1..3600`. Timeout is incomplete evidence, never a pass. For `atc_ci` / `unittest_ci`: overall budget, default `600`, range `1..3600`. For `debug`: how long to wait for the breakpoint to be hit; default `60`, range `1..240`. |
 | `source` | string | No | Current source code (required for `quickfix` and `apply_quickfix`) |
-| `line` | number | No | Source line number (required for `quickfix` and `apply_quickfix`) |
+| `line` | number | No | Source line number (required for `quickfix` and `apply_quickfix`). For `debug`: the 1-based breakpoint line, numbered like the source `SAPRead` returns. |
 | `column` | number | No | Source column number (optional for `quickfix` and `apply_quickfix`, default `0`) |
 | `proposalUri` | string | No | Quickfix proposal URI from `quickfix` response (required for `apply_quickfix`) |
 | `proposalUserContent` | string | No | Opaque proposal state from `quickfix` response (required for `apply_quickfix`) |
@@ -2366,6 +2367,13 @@ administrators can disable them with `SAP_DENY_ACTIONS`.
 | `sqlTrace` | boolean | No | For `trace_start`: capture SQL/DB accesses (default true; needed for `dbAccesses` analysis). |
 | `aggregate` | boolean | No | For `trace_start`: aggregate the captured trace (default true). |
 | `description` | string | No | Optional label for an armed trace request. |
+| `method` | string | No | For `debug` (`type="CLAS"`): stop in this method instead of at `line` — `get_total`, `zif_order~process`, or a local-class method such as `lhc_travel~validate_dates`. ARC-1 reads the **active** source, finds the `METHOD` statement, and arms the first line SAP accepts. |
+| `include` | string | No | For `debug` (`type="CLAS"`): `implementations` or `testclasses` — the local-class include `line` refers to. Auto-detected for `lhc_`/`lcl_`/`ltc_` methods. |
+| `exceptionClass` | string | No | For `debug`: also (or only) stop where this exception class is raised, e.g. `CX_SY_ZERODIVIDE`. |
+| `trigger` | string | No | For `debug`: what runs the code. `unittest` (default) = harmless ABAP Unit of `triggerName`, or of the breakpoint object (FUNC → its function group); `http` = GET `url`; `none` = ARC-1 only waits `timeoutSeconds` while you run it yourself (Fiori app, SE38, Postman) **as the same SAP user**. |
+| `triggerName` | string | No | For `debug` with `trigger="unittest"`: the class, program or function group whose unit tests exercise the breakpoint, when it is not the breakpoint object itself (type resolved by exact repository match). |
+| `variables` | array | No | For `debug`: variable expressions read at the stop and after every step — `LV_TOTAL`, `LS_HEAD-VBELN`, `LT_ITEMS`, `LT_ITEMS[3]`, `ME->MV_STATE`, `SY-SUBRC`. Structures are expanded one level and tables return their first 5 rows. Default: every variable of the stopped frame (up to 60; tables as line counts). Max 20 expressions. |
+| `steps` | number | No | For `debug`: number of `stepOver`s after the stop (`0..20`, default `0`); each records the new position and the `variables` values. |
 
 **Actions:**
 
@@ -2405,6 +2413,8 @@ Both CI actions are excluded from multi-target mode. Software-component selectio
 - **`set_sql_trace_state`** — Arm or disarm the ST05 SQL trace. Requires `sqlOn` (`true` = arm, `false` = disarm); optional `user` filters the trace to one SAP user. Mutates server trace state → needs `SAP_ALLOW_WRITES`. Workflow: arm → reproduce the slow request → `sql_trace_directory` for the record-viewer link.
 - **`sql_trace_directory`** — Return where the recorded SQL is read. ADT has no SQL-record endpoint; SAP answers `/st05/trace/directory` with the **Technical Monitoring Cockpit "SQL Trace Analysis" deep-link** — ARC-1 returns that URL (open it in a browser; needs the `/sap/bc/stmc` SICF service active). Read-only. *(The richer ADT-native record reader is the ABAP Cross Trace API — a planned follow-up.)*
 
+- **`debug`** — **One-shot ABAP debugger capture** (opt-in: `SAP_ALLOW_DEBUG=true` **and** `SAP_ALLOW_DATA_PREVIEW=true`, plus the `data` scope). In one call ARC-1 arms an external breakpoint for the connected SAP user (`line`/`method` in a `CLAS`, `PROG` or `FUNC`, and/or `exceptionClass`), starts SAP's debugger listener, runs the `trigger`, attaches when the code stops, returns the **call stack** and the **variables** of the stopped frame (or the `variables` you name), optionally `steps` forward recording each position, then **releases the debuggee** (it runs to completion) and removes its breakpoints and listener. Nothing stays stopped between tool calls — ARC-1 is stateless and a suspended program holds a work process — so ask for every variable you need up front; to look again, run another capture. Result: `hit`, `breakpoints` (set, or refused with SAP's reason — ARC-1 probes the next few lines when a line has no statement), `stoppedAt`, `stack` (customer frames; system frames counted), `variables`, `steps`, `release`, `trigger` (the unit-test summary or HTTP status), `warnings`. When nothing stopped, `hit:false` carries the `reason` (timeout, trigger finished first, conflict) and a `hint`. ARC-1 never changes variable values, jumps, or debugs system code, and only ever debugs **its own logon user** (`SAP_USER`; principal-propagation/cookie/OAuth sessions are refused because SAP needs the user name). If Eclipse/VS Code is already debugging the same SAP user, ARC-1 refuses instead of taking the session over. Not available in multi-target mode. Design + ADT contract: `docs/research/2026-10-22-abap-debugger-one-shot-capture.md`.
+
 **Examples:**
 ```
 SAPDiagnose(action="syntax", type="CLAS", name="ZCL_ORDER")
@@ -2441,6 +2451,11 @@ SAPDiagnose(action="cds_sql", name="I_CURRENCY")                    — the nati
 SAPDiagnose(action="sql_trace_state")                               — is the ST05 SQL trace on? for whom?
 SAPDiagnose(action="set_sql_trace_state", sqlOn=true, user="DEVELOPER") — arm the SQL trace for one user (needs SAP_ALLOW_WRITES)
 SAPDiagnose(action="sql_trace_directory")                           — get SAP's SQL Trace Analysis deep-link to read the records
+SAPDiagnose(action="debug", type="CLAS", name="ZCL_ORDER", method="get_total")                    — stop in GET_TOTAL while its unit tests run; stack + locals
+SAPDiagnose(action="debug", type="CLAS", name="ZCL_ORDER", line=42, variables=["LV_TOTAL","LT_ITEMS"], steps=3)
+SAPDiagnose(action="debug", type="CLAS", name="ZBP_I_TRAVEL", method="lhc_travel~validate_dates", trigger="http", url="/sap/opu/odata4/sap/zui_travel/srvd/sap/ztravel/0001/Travel")
+SAPDiagnose(action="debug", type="PROG", name="ZREPORT", line=30, trigger="none", timeoutSeconds=120) — run ZREPORT yourself (same SAP user) while ARC-1 waits
+SAPDiagnose(action="debug", exceptionClass="CX_SY_ITAB_LINE_NOT_FOUND", trigger="unittest", triggerName="ZCL_ORDER") — where is it raised?
 ```
 
 ### Check several objects for syntax errors

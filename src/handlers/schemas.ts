@@ -1078,6 +1078,78 @@ export const SAPLintSchema = z
 
 // ─── SAPDiagnose ────────────────────────────────────────────────────
 
+const DEBUG_ONLY_FIELDS = [
+  'method',
+  'include',
+  'exceptionClass',
+  'trigger',
+  'triggerName',
+  'variables',
+  'steps',
+] as const;
+
+/** Cross-field rules for SAPDiagnose action="debug" (and its parameters on other actions). */
+function refineDebugInput(
+  input: {
+    action: string;
+    name?: string;
+    type?: string;
+    line?: number;
+    url?: string;
+    timeoutSeconds?: number;
+  } & Partial<Record<(typeof DEBUG_ONLY_FIELDS)[number], unknown>>,
+  ctx: z.RefinementCtx,
+): void {
+  if (input.action !== 'debug') {
+    for (const field of DEBUG_ONLY_FIELDS) {
+      if (input[field] !== undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [field],
+          message: `SAPDiagnose ${field} is only supported for action="debug".`,
+        });
+      }
+    }
+    return;
+  }
+  const type = input.type?.toUpperCase().split('/')[0] ?? '';
+  if (input.line === undefined && input.method === undefined && input.exceptionClass === undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['line'],
+      message:
+        'SAPDiagnose action="debug" needs a breakpoint: line or method (with type + name), and/or exceptionClass.',
+    });
+  }
+  if (input.line !== undefined && (!Number.isInteger(input.line) || input.line < 1)) {
+    ctx.addIssue({ code: 'custom', path: ['line'], message: 'debug line must be a positive integer (1-based).' });
+  }
+  if ((input.line !== undefined || input.method !== undefined) && (!input.name || !type)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['name'],
+      message: 'debug line/method breakpoints need type (CLAS, PROG or FUNC) and name.',
+    });
+  }
+  if ((input.method !== undefined || input.include !== undefined) && type !== 'CLAS') {
+    ctx.addIssue({
+      code: 'custom',
+      path: [input.method !== undefined ? 'method' : 'include'],
+      message: 'debug method/include are only supported for type="CLAS".',
+    });
+  }
+  if (input.trigger === 'http' && !input.url) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['url'],
+      message: 'debug trigger="http" needs url (a host-relative OData path).',
+    });
+  }
+  if (input.timeoutSeconds !== undefined && input.timeoutSeconds > 240) {
+    ctx.addIssue({ code: 'custom', path: ['timeoutSeconds'], message: 'debug timeoutSeconds must be 1-240.' });
+  }
+}
+
 const QuickfixAffectedObjectSchema = z.object({
   uri: z.string(),
   type: z.string().optional(),
@@ -1127,12 +1199,24 @@ export const SAPDiagnoseSchema = z
       'set_sql_trace_state',
       'sql_trace_directory',
       'authorization_trace',
+      'debug',
     ]),
     name: z.string().optional(),
     url: z.string().optional(),
     type: z.string().optional(),
     objects: atcBatchObjectsSchema(ATC_BATCH_TYPES),
     source: z.string().optional(),
+    // debug (one-shot debugger capture) — listed in tools.ts only when SAP_ALLOW_DEBUG is on
+    method: z.string().max(128).optional(),
+    include: z.enum(['implementations', 'testclasses']).optional(),
+    exceptionClass: z
+      .string()
+      .regex(/^[A-Za-z0-9_/]{1,30}$/, 'exceptionClass must be an ABAP class name')
+      .optional(),
+    trigger: z.enum(['unittest', 'http', 'none']).optional(),
+    triggerName: z.string().max(40).optional(),
+    variables: z.array(z.string().min(1).max(200)).max(20).optional(),
+    steps: z.coerce.number().int().min(0).max(20).optional(),
     sourceUri: z.string().optional(),
     line: z.coerce.number().optional(),
     column: z.coerce.number().optional(),
@@ -1258,15 +1342,17 @@ export const SAPDiagnoseSchema = z
       input.action !== 'unittest' &&
       input.action !== 'atc' &&
       input.action !== 'unittest_ci' &&
-      input.action !== 'atc_ci'
+      input.action !== 'atc_ci' &&
+      input.action !== 'debug'
     ) {
       ctx.addIssue({
         code: 'custom',
         path: ['timeoutSeconds'],
         message:
-          'SAPDiagnose timeoutSeconds is only supported for action="unittest", "atc", "unittest_ci", or "atc_ci".',
+          'SAPDiagnose timeoutSeconds is only supported for action="unittest", "atc", "unittest_ci", "atc_ci", or "debug".',
       });
     }
+    refineDebugInput(input, ctx);
     if (input.resultFormat !== undefined) {
       if (input.action === 'atc' && input.resultFormat === 'junit') {
         ctx.addIssue({

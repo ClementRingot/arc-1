@@ -1257,3 +1257,28 @@ describe('Tool Definitions', () => {
     });
   });
 });
+
+describe('SAPDiagnose action="debug" visibility', () => {
+  const diagnose = (config: typeof DEFAULT_CONFIG) => getToolDefinitions(config).find((t) => t.name === 'SAPDiagnose');
+  const actions = (config: typeof DEFAULT_CONFIG): string[] => {
+    const properties = (diagnose(config)?.inputSchema.properties ?? {}) as Record<string, { enum?: string[] }>;
+    return properties.action?.enum ?? [];
+  };
+
+  it('is hidden by default and when only one of its two gates is on', () => {
+    expect(actions(DEFAULT_CONFIG)).not.toContain('debug');
+    expect(actions({ ...DEFAULT_CONFIG, allowDebug: true })).not.toContain('debug');
+    expect(actions({ ...DEFAULT_CONFIG, allowDataPreview: true })).not.toContain('debug');
+    expect(Object.keys(diagnose(DEFAULT_CONFIG)?.inputSchema.properties as object)).not.toContain('trigger');
+    expect(diagnose(DEFAULT_CONFIG)?.description).not.toContain('"debug"');
+  });
+
+  it('lists the action, its description line and its properties with SAP_ALLOW_DEBUG + data preview', () => {
+    const config = { ...DEFAULT_CONFIG, allowDebug: true, allowDataPreview: true };
+    expect(actions(config)).toContain('debug');
+    expect(diagnose(config)?.description).toContain('- "debug": one-shot debugger capture');
+    expect(Object.keys(diagnose(config)?.inputSchema.properties as object)).toEqual(
+      expect.arrayContaining(['method', 'include', 'exceptionClass', 'trigger', 'triggerName', 'variables', 'steps']),
+    );
+  });
+});
