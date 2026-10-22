@@ -33,7 +33,8 @@ Both access modes are supported choices. Upgrading alone does not require any ta
 
     Target authorization is available from ARC-1 **1.6.0**. Confirm that your selected release includes
     this feature before using the setting; older installations do not enforce it. The required
-    companion API is provided by `@arc-mcp/xsuaa-auth` 1.1.0 and included in ARC-1's dependencies.
+    companion API is included in ARC-1's dependencies. Use the library version resolved by the
+    current fixed ARC-1 release; do not pin an older library independently of that release.
     Upgrading does not enable enforcement: existing deployments keep standard access until you opt in.
 
 Use this guide, the deployment runbook and examples from the **same source revision** as the artifact.

@@ -374,6 +374,13 @@ ARC-1 implements RFC 7591 Dynamic Client Registration (DCR) with a **stateless**
 This means:
 
 - DCR registrations survive `cf restart`, `cf push`, `cf restage`, cell evacuations, OOM auto-recovery, and multi-instance scale-out — none of these invalidate cached `client_id`s.
+- Every sign-in now requires an ARC-1 approval page showing the client name, return address and requested permissions before XSUAA sign-in. Existing IdP SSO sessions do not skip it. Only approve a connection you started in a trusted MCP client; names are self-declared.
+- Approval and callback use separate host-only, HttpOnly cookies with a ten-minute lifetime. Reverse proxies must preserve `Origin` and `Cookie` headers and set `ARC1_PUBLIC_URL` to the correct public HTTPS origin and path prefix. HTTP is supported only for loopback development.
+- Outside Cloud Foundry, a non-loopback HTTP bind address is insufficient: set `ARC1_PUBLIC_URL` to the canonical HTTPS URL. All clients must use that same origin; alternate routes can lose the approval cookie. Proxies must preserve `Set-Cookie` and must not replace the approval page's `Referrer-Policy: origin`.
+- For HTTP development, use `localhost` or `127.0.0.1` as the public issuer host. The currently tested MCP SDK rejects an IPv6 HTTP issuer; IPv6 client callback URLs remain supported.
+- Set `ARC1_OAUTH_DCR_ENABLED=false` to stop new registrations and omit the registration discovery endpoint. Existing registered IDs and the manual XSUAA client remain usable with approval.
+- Upgrade every instance before resuming sign-ins. In-flight sign-ins must restart; old unbound state and raw upstream codes are rejected. Existing client IDs and tokens are not invalidated by the upgrade. If exposure is suspected, use documented XSUAA incident controls and verify invalidation independently; rotating the DCR signing key alone does not revoke upstream tokens.
+- A completed approval uses two `/authorize` requests (page and form submission), both counted by the existing per-IP limits. Account for shared-IP traffic when sizing the limit.
 - The default lifetime is **`0` — never expire**. There is no per-client revocation at any TTL (a `client_id` is a stateless HMAC token, not a store row), so a finite TTL only produces periodic `invalid_client` re-auth outages — and some MCP clients (Eclipse Copilot, Copilot CLI) don't self-heal from it. Configurable via `--oauth-dcr-ttl-seconds` / `ARC1_OAUTH_DCR_TTL_SECONDS`; set a positive value to opt into expiry (clamped to `[60s, 90d]`). Revocation is global, via signing-key rotation (below).
 - Per-client revocation is intentionally not supported. Forced revocation goes through full key rotation (see below) — rotate the DCR signing key (`ARC1_DCR_SIGNING_SECRET`) or rebind the XSUAA service. (A deeper `KDF_LABEL` bump, `arc1-dcr/v1` → `v2`, also revokes everything, but it lives in the `@arc-mcp/xsuaa-auth` package now, not this repo.)
 - `/register`, `/authorize`, `/token`, `/revoke` are per-IP rate-limited by default (`ARC1_AUTH_RATE_LIMIT=20`/min/IP). Closes CodeQL alert `js/missing-rate-limiting`. Tune via the env var or disable with `=0` if an upstream proxy already provides this. See the [Rate Limiting Guide](rate-limiting.md).
@@ -504,7 +511,7 @@ CORS applies when a browser makes a cross-origin request to ARC-1. Native or ser
 
 DCR lifecycle is captured in the audit stream alongside tool calls. Three event types fire:
 
-- `oauth_client_registered` — `info`: a new `client_id` was minted; payload includes the issued id, client name, redirect-URI count, and id length (for tracking URL-budget regressions).
+- `oauth_client_registered` — `info`: a new `client_id` was minted; payload includes the issued id, client name, redirect-URI count, parsed redirect hosts, and id length (for tracking URL-budget regressions).
 - `oauth_client_lookup_failed` — `warn` (or `info` for `expired`): a `client_id` failed to resolve; `reason` is one of `unknown_prefix` / `malformed` / `bad_signature` / `invalid_payload` / `expired`. Useful for spotting forgery / probing attempts.
 - `oauth_redirect_uri_registered` — `info`: a redirect URI matched ARC-1's manual-client policy
   and was added at `/authorize` time to ARC-1's in-memory metadata for that client. This does not

@@ -137,6 +137,7 @@ describe('multi-target HTTP route authentication', () => {
 
   afterEach(() => {
     listenSpy.mockRestore();
+    vi.unstubAllEnvs();
   });
 
   it('authenticates syntactically valid target routes before revealing route membership', async () => {
@@ -244,6 +245,44 @@ describe('multi-target HTTP route authentication', () => {
     expect((await request(app).get('/targets').set('Authorization', 'Bearer read-token')).status).toBe(404);
     expect((await request(app).get('/TARGETS').set('Authorization', 'Bearer admin-token')).status).toBe(404);
   });
+
+  it.each(['https://arc1.example', 'https://gateway.example/arc1'])(
+    'omits registration while retaining multi-target discovery at %s',
+    async (publicUrl) => {
+      vi.stubEnv('ARC1_PUBLIC_URL', publicUrl);
+      await startHttpServer(
+        undefined,
+        {
+          ...DEFAULT_CONFIG,
+          transport: 'http-streamable',
+          httpAddr: '127.0.0.1:0',
+          xsuaaAuth: true,
+          oauthDcrEnabled: false,
+          multiTargetEndpoints: true,
+          multiTargetAuthorization: 'xsuaa-attribute',
+          authRateLimit: 0,
+          mcpHttpRateLimit: 0,
+        },
+        XSUAA,
+        undefined,
+        {
+          registry: registry(),
+          authorizationMode: 'xsuaa-attribute',
+          aggregateFactory: aggregateFactory as never,
+          createPinnedServer: vi.fn() as never,
+        },
+      );
+      const oauth = await request(app).get('/.well-known/oauth-authorization-server');
+      expect(oauth.status).toBe(200);
+      expect(oauth.body.authorization_endpoint).toBe(`${publicUrl}/authorize`);
+      expect(oauth.body.registration_endpoint).toBeUndefined();
+      expect((await request(app).post('/register').send({})).status).toBe(404);
+      const aggregate = await request(app).get('/.well-known/oauth-protected-resource/multi/mcp');
+      expect(aggregate.status).toBe(200);
+      expect(aggregate.body.resource).toBe(`${publicUrl}/multi/mcp`);
+      expect(aggregate.body.scopes_supported).toEqual(['read', 'data', 'sql', 'admin']);
+    },
+  );
 
   it('keeps the multi-only Copilot /authorize fallback XSUAA-only', async () => {
     const apiKey = await request(app)
