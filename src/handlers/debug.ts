@@ -13,6 +13,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { AdtClient } from '../adt/client.js';
 import {
+  contextServer,
   createDebugIdentity,
   type DebugBreakpointSpec,
   type DebugBreakpointState,
@@ -653,10 +654,19 @@ async function runSteps(
     const [top] = await session.stack();
     const entry: Record<string, unknown> = { step: index, ...(top ? describeFrame(top) : {}) };
     if (watch.length > 0) {
-      const values: Record<string, string> = {};
+      const values: Record<string, string | Record<string, string>> = {};
       try {
-        for (const variable of await session.variables(watch))
-          values[variable.id || variable.name] = compactValue(variable);
+        const read = await session.variables(watch);
+        // A structure shows its components (one batched read per step), not just "structure".
+        const structures = read.filter((variable) => variable.metaType === 'structure');
+        const components =
+          structures.length > 0
+            ? childrenByParent(await session.childVariables(structures.map((variable) => variable.id)))
+            : undefined;
+        for (const variable of read) {
+          values[variable.id || variable.name] =
+            variable.metaType === 'structure' ? componentsOf(components?.get(variable.id)) : compactValue(variable);
+        }
         entry.values = values;
       } catch (err) {
         entry.valuesError = debuggerErrorText(err);
@@ -763,7 +773,7 @@ type ListenSettled = DebugListenResult | { status: 'error'; error: unknown };
 
 function notHitHint(req: DebugRequest, user: string, triggerFinished: boolean): string {
   const race =
-    ' If the line is certainly executed, retry once: the run may have reached it before SAP registered the listener.';
+    ' If the line is certainly executed, retry once: the run may have reached it before SAP registered the listener. Right after an activation, wait about a minute first: with several application servers, the new version may not yet have reached the one that ran the code.';
   if (triggerFinished && req.trigger === 'unittest') {
     return `The unit tests finished without reaching the breakpoint — check that a harmless test covers this code (SAPDiagnose action="unittest" coverage=true lists methodsBelowFull), or use trigger="http" / trigger="none".${race}`;
   }
@@ -879,7 +889,13 @@ async function runCapture(client: AdtClient, req: DebugRequest, user: string): P
     const triggerFinished = first.source === 'trigger';
     if (triggerFinished) listenAbort.abort();
     const outcome: ListenSettled = first.source === 'listener' ? first.outcome : await listen;
-    const base = { user, breakpoints: armed.report, trigger: { kind: plan.kind, target: plan.label } };
+    // Where ARC-1's own run went (pinned ahead of it): the server the debuggee stops on.
+    const triggerServer = running && ahead.trigger ? contextServer(ahead.trigger.sessionContextId) : undefined;
+    const base = {
+      user,
+      breakpoints: armed.report,
+      trigger: { kind: plan.kind, target: plan.label, ...(triggerServer ? { server: triggerServer } : {}) },
+    };
 
     if (outcome.status !== 'caught') {
       await teardown();

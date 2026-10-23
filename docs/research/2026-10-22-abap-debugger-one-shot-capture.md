@@ -208,7 +208,8 @@ always: clear external breakpoints, delete the listener, settle the trigger.
 
 Output (JSON): `hit`, `debuggee` (incl. `server`), `breakpoints` (set / refused with SAP's message), `stoppedAt`,
 `stack` (customer frames, system frames counted), `variables` (simple values, one level of structure
-components, first table rows; values truncated), `steps`, `release`, `trigger` (outcome), `warnings`.
+components, first table rows; values truncated), `steps` (each watched variable, structures by their
+components), `release`, `trigger` (outcome; `server` when ARC-1 pinned its run), `warnings`.
 
 ## 6. ARC-1 impact
 
