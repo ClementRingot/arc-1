@@ -774,7 +774,7 @@ type ListenSettled = DebugListenResult | { status: 'error'; error: unknown };
 function notHitHint(req: DebugRequest, user: string, triggerFinished: boolean, triggerFailed: boolean): string {
   if (triggerFailed) {
     return req.trigger === 'http'
-      ? 'The trigger request itself failed (trigger.error), so nothing ran to the breakpoint. Make that call work on its own first — SAPDiagnose action="odata_perf" with the same url shows its status. On the BTP ABAP Environment a custom OData service answers 403 "blocked by UCON" until it is exposed through an IAM app or communication scenario.'
+      ? 'The trigger request itself failed (trigger.error), so nothing ran to the breakpoint. Make that call work on its own first — SAPDiagnose action="odata_perf" with the same url shows its status. A service published moments ago can answer 403 "blocked by UCON" for a few minutes (seen on the BTP ABAP Environment).'
       : 'The trigger itself failed (trigger.error), so nothing ran to the breakpoint. Make it run on its own first (SAPDiagnose action="unittest").';
   }
   const race =
