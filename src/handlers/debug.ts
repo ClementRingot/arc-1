@@ -771,7 +771,12 @@ async function inspect(
 
 type ListenSettled = DebugListenResult | { status: 'error'; error: unknown };
 
-function notHitHint(req: DebugRequest, user: string, triggerFinished: boolean): string {
+function notHitHint(req: DebugRequest, user: string, triggerFinished: boolean, triggerFailed: boolean): string {
+  if (triggerFailed) {
+    return req.trigger === 'http'
+      ? 'The trigger request itself failed (trigger.error), so nothing ran to the breakpoint. Make that call work on its own first — SAPDiagnose action="odata_perf" with the same url shows its status. On the BTP ABAP Environment a custom OData service answers 403 "blocked by UCON" until it is exposed through an IAM app or communication scenario.'
+      : 'The trigger itself failed (trigger.error), so nothing ran to the breakpoint. Make it run on its own first (SAPDiagnose action="unittest").';
+  }
   const race =
     ' If the line is certainly executed, retry once: the run may have reached it before SAP registered the listener. Right after an activation, wait about a minute first: with several application servers, the new version may not yet have reached the one that ran the code.';
   if (triggerFinished && req.trigger === 'unittest') {
@@ -919,7 +924,7 @@ async function runCapture(client: AdtClient, req: DebugRequest, user: string): P
           ...base,
           trigger: { ...base.trigger, ...(triggerOutcome ?? {}) },
           ...(warnings.length > 0 ? { warnings } : {}),
-          hint: notHitHint(req, user, triggerFinished),
+          hint: notHitHint(req, user, triggerFinished, triggerFailure !== undefined),
         }),
       );
     }
