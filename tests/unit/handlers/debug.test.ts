@@ -444,7 +444,7 @@ describe('SAPDiagnose action="debug" — a hit', () => {
       debuggee: { server: 'appserver-t4w2x' },
       variables: [{ name: 'LV_TOTAL', value: '39' }],
       release: { released: true, via: 'continue' },
-      trigger: { status: 'completed' },
+      trigger: { status: 'completed', server: 'appserver-t4w2x' },
     });
     // Before the run, while the balancer still alternates: sessions until two share a server.
     const probes = calls.filter((c) => c.path === '/sap/bc/adt/core/http/systeminformation' && c.stateful);
@@ -486,6 +486,14 @@ describe('SAPDiagnose action="debug" — a hit', () => {
     expect(calls.filter((c) => c.query.get('method') === 'attach').map((c) => c.server)).toEqual(['appserver-rpsxx']);
     // The sessions opened ahead covered both servers: nothing probed after the stop.
     expect(calls.filter((c) => c.path === '/sap/bc/adt/core/http/systeminformation' && c.stateful)).toHaveLength(3);
+  });
+
+  it('shows a structure watched across steps by its components', async () => {
+    installFakeSap({ hit: true });
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, variables: ['LS_HEAD'], steps: 1 });
+    expect(json?.steps).toEqual([
+      expect.objectContaining({ step: 1, values: { LS_HEAD: { VBELN: '0000004711', KUNNR: 'CUST01' } } }),
+    ]);
   });
 
   it('refuses a second capture for the same SAP user while one is running', async () => {
@@ -561,6 +569,7 @@ describe('SAPDiagnose action="debug" — no hit', () => {
       trigger: { kind: 'unittest', status: 'completed' },
     });
     expect(json?.hint).toContain('coverage=true');
+    expect(json?.hint).toContain('Right after an activation, wait about a minute');
     expect(named(calls, 'DELETE', '/sap/bc/adt/debugger/breakpoints/BP-L9')).toHaveLength(1);
     expect(named(calls, 'DELETE', '/sap/bc/adt/debugger/listeners')).toHaveLength(1);
     expect(calls.some((c) => c.query.get('method') === 'attach')).toBe(false);
