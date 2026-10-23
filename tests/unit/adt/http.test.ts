@@ -983,6 +983,34 @@ describe('AdtHttpClient', () => {
         expect((session as any).cookieJar.get('SAP_SESSIONID')).toBe('sess1');
       });
     });
+
+    it('opens a session of its own that keeps the sap-contextid SAP assigns it', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse(200, '{}', {}, ['sap-contextid=SID%3aANON%3aappserver-t4w2x%3aKX9qZ-NEW; path=/']),
+      );
+      const client = new AdtHttpClient(getDefaultConfig());
+      (client as any).csrfToken = 'PARENT_TOKEN';
+      const session = client.openStatefulSession();
+      expect(session.sessionContextId).toBeUndefined();
+      expect((session as any).csrfToken).toBe('PARENT_TOKEN');
+
+      await session.get('/sap/bc/adt/core/http/systeminformation');
+
+      expect(fetchHeaders(0)['X-sap-adt-sessiontype']).toBe('stateful');
+      expect(session.sessionContextId).toBe('SID%3aANON%3aappserver-t4w2x%3aKX9qZ-NEW');
+      expect(client.sessionContextId).toBeUndefined();
+    });
+
+    it('lets a session end itself: an explicit session-type header wins over stateful', async () => {
+      mockFetch.mockResolvedValue(mockResponse(200, '{}'));
+      const session = new AdtHttpClient(getDefaultConfig()).openStatefulSession();
+      (session as any).cookieJar.set('sap-contextid', 'SID%3aANON%3aappserver-t4w2x%3aKX9qZ-NEW');
+
+      await session.get('/sap/bc/adt/core/http/systeminformation', { 'X-sap-adt-sessiontype': 'stateless' });
+
+      expect(fetchHeaders(0)['X-sap-adt-sessiontype']).toBe('stateless');
+      expect(fetchHeaders(0).Cookie).toContain('sap-contextid=SID%3aANON%3aappserver-t4w2x%3aKX9qZ-NEW');
+    });
   });
 
   // ─── URL Building ──────────────────────────────────────────────────

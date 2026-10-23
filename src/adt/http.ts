@@ -281,24 +281,29 @@ export class AdtHttpClient {
   }
 
   /**
-   * Execute a function within an isolated stateful session.
-   * Ensures lock/modify/unlock share the same SAP session cookies.
-   *
-   * Creates a new client instance with stateful session header,
-   * shares CSRF token with the main client.
+   * Execute a function within an isolated stateful session (`X-sap-adt-sessiontype: stateful`) that
+   * shares the CSRF token and cookies — lock/modify/unlock share the same SAP session cookies.
    */
   async withStatefulSession<T>(fn: (client: AdtHttpClient) => Promise<T>): Promise<T> {
-    const sessionConfig: AdtHttpConfig = {
-      ...this.config,
-      sessionType: 'stateful',
-    };
-    const sessionClient = new AdtHttpClient(sessionConfig, this.authenticationAttemptState);
-    // Share CSRF token and cookies so we don't need to re-fetch
+    return fn(this.openStatefulSession());
+  }
+
+  /** The `withStatefulSession` client, for callers that open several sessions and keep one. */
+  openStatefulSession(): AdtHttpClient {
+    const sessionClient = new AdtHttpClient(
+      { ...this.config, sessionType: 'stateful' },
+      this.authenticationAttemptState,
+    );
     sessionClient.csrfToken = this.csrfToken;
     sessionClient.cookieJar = new Map(this.cookieJar);
     sessionClient.discoveryMap = this.discoveryMap;
     sessionClient.negotiatedHeaders = new Map(this.negotiatedHeaders);
-    return fn(sessionClient);
+    return sessionClient;
+  }
+
+  /** The session's `sap-contextid` cookie (`SID:ANON:<application server>:<id>`, URL-encoded), if SAP set one. */
+  get sessionContextId(): string | undefined {
+    return this.cookieJar.get('sap-contextid');
   }
 
   /** Core request method — wraps requestInner with optional concurrency limiter */
@@ -404,14 +409,15 @@ export class AdtHttpClient {
       }
     }
 
+    // Before extraHeaders: a session ends itself with `X-sap-adt-sessiontype: stateless`.
+    if (this.config.sessionType === 'stateful') {
+      headers['X-sap-adt-sessiontype'] = 'stateful';
+    }
+
     Object.assign(headers, extraHeaders);
 
     if (this.config.disableSaml) {
       headers['X-SAP-SAML2'] = 'disabled';
-    }
-
-    if (this.config.sessionType === 'stateful') {
-      headers['X-sap-adt-sessiontype'] = 'stateful';
     }
 
     if (contentType) {

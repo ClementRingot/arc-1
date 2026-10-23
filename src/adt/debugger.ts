@@ -7,8 +7,9 @@
  * - breakpoints and the listener are keyed by `debuggingMode=user` + `requestUser` + `terminalId` +
  *   `ideId`; `requestUser` MUST be the real SAP logon user (an empty one matches nothing);
  * - the listener is a long poll that answers with the stopped debuggee, or an empty body at timeout;
- * - attach → stack → variables → step → release must share ONE stateful session (`sap-contextid`),
- *   so `DebuggerSession` is constructed with a `withStatefulSession()` client;
+ * - attach → stack → variables → step → release must share ONE stateful session (`sap-contextid`)
+ *   on the debuggee's application server, so `DebuggerSession` is constructed with the client
+ *   `openSessionOnServer()` returns;
  * - every request is preceded by `checkDebug` (SAP_ALLOW_DEBUG + SAP_ALLOW_DATA_PREVIEW).
  *
  * Deliberately absent: variable writes (`setVariableValue`), `stepJumpToLine`/`stepRunToLine` and
@@ -17,9 +18,11 @@
 
 import { randomUUID } from 'node:crypto';
 import { XMLParser } from 'fast-xml-parser';
+import { logger } from '../server/logger.js';
 import { AdtApiError } from './errors.js';
 import type { AdtHttpClient, AdtRequestOptions } from './http.js';
 import { checkDebug, type SafetyConfig } from './safety.js';
+import { SYSTEM_INFORMATION_ACCEPT, SYSTEM_INFORMATION_PATH } from './session-user.js';
 import { decodeXmlEntities, escapeXmlAttr } from './xml-parser.js';
 
 const DEBUGGER_PATH = '/sap/bc/adt/debugger';
@@ -308,6 +311,8 @@ export interface Debuggee {
   line?: number;
   kind: string;
   attachImpossible: boolean;
+  /** The application server the debuggee waits on (`INSTANCE_NAME`, the name `sap-contextid` carries). */
+  instance?: string;
   uri?: string;
   objectType?: string;
   objectName?: string;
@@ -329,6 +334,7 @@ export function parseDebuggee(xml: string): Debuggee | undefined {
     ...(line !== undefined ? { line } : {}),
     kind: field('DBGEE_KIND'),
     attachImpossible: flag(field('IS_ATTACH_IMPOSSIBLE')),
+    ...(field('INSTANCE_NAME') ? { instance: field('INSTANCE_NAME') } : {}),
     ...(field('URI') ? { uri: field('URI') } : {}),
     ...(field('TYPE') ? { objectType: field('TYPE') } : {}),
     ...(field('NAME') ? { objectName: field('NAME') } : {}),
@@ -427,6 +433,149 @@ export async function stopListener(
   checkDebug(safety, 'DebuggerStopListener');
   const query = new URLSearchParams({ debuggingMode: 'user', requestUser: user.toUpperCase() }).toString();
   await http.delete(`${LISTENERS_PATH}?${query}`, { Accept: '*/*' }, options);
+}
+
+// ─── The debuggee's server ─────────────────────────────────────────
+//
+// SAP attaches only from the debuggee's own application server: from any other it answers
+// `invalidDebuggee` — although the debuggee reports `CAN_ADT_CROSS_SERVER=true` — and the refused attempt
+// spoils the debuggee for every later one. Nothing addresses a server directly: a new stateful session
+// is load-balanced, and its `sap-contextid` names where it landed. The balancer prefers the least-loaded
+// server and a stopped debuggee loads its own, so once it waits, new sessions avoid it (live, BTP ABAP:
+// 16 of 16, either way round). Sessions are therefore opened BEFORE the run (`openSessionsAhead`), and
+// ARC-1's own trigger runs on one of them; probing after the stop is the fallback.
+
+/** Before the run: a balanced pair of servers is seen twice within 3 probes, one server within 2. */
+const MAX_AHEAD_PROBES = 6;
+/** After the stop the balancer steers away from the debuggee's server, so more probes rarely help. */
+const MAX_SERVER_PROBES = 8;
+
+/** A new stateful session and the server SAP pinned it to — none when SAP does not say (≤ 7.50, other cookie shapes). */
+async function probeSession(
+  http: AdtHttpClient,
+  options: AdtRequestOptions,
+): Promise<{ session: AdtHttpClient; server?: string }> {
+  const session = http.openStatefulSession();
+  try {
+    await session.get(
+      SYSTEM_INFORMATION_PATH,
+      { Accept: SYSTEM_INFORMATION_ACCEPT },
+      { ...options, suppressNotFoundLog: true },
+    );
+  } catch (err) {
+    if (err instanceof AdtApiError && [404, 405, 406, 501].includes(err.statusCode)) return { session };
+    throw err;
+  }
+  const server = contextServer(session.sessionContextId);
+  return { session, ...(server ? { server } : {}) };
+}
+
+export interface SessionsAhead {
+  /** One idle stateful session per server seen, keyed upper-case: the attach session for a debuggee there. */
+  byServer: Map<string, AdtHttpClient>;
+  /** A second session on one of those servers: a trigger run on it stops where an attach session waits. */
+  trigger?: AdtHttpClient;
+}
+
+/**
+ * Stateful sessions opened before the run, while no debuggee loads a server: until two land on the same
+ * server (that pair runs the trigger and attaches) or `maxProbes`. Empty when SAP names no server
+ * (single server, older releases): then the attach goes wherever it lands, as before.
+ */
+export async function openSessionsAhead(
+  http: AdtHttpClient,
+  safety: SafetyConfig,
+  options: AdtRequestOptions & { maxProbes?: number } = {},
+): Promise<SessionsAhead> {
+  checkDebug(safety, 'DebuggerOpenSession');
+  const { maxProbes = MAX_AHEAD_PROBES, ...requestOptions } = options;
+  const byServer = new Map<string, AdtHttpClient>();
+  try {
+    for (let probe = 0; probe < maxProbes; probe++) {
+      const { session, server } = await probeSession(http, requestOptions);
+      if (!server) {
+        await endSession(session, safety, requestOptions);
+        break;
+      }
+      if (byServer.has(server.toUpperCase())) {
+        logger.debug('Debugger sessions opened ahead of the run', { servers: [...byServer.keys()], probes: probe + 1 });
+        return { byServer, trigger: session };
+      }
+      byServer.set(server.toUpperCase(), session);
+    }
+  } catch (err) {
+    for (const session of byServer.values()) await endSession(session, safety, requestOptions);
+    throw err;
+  }
+  return { byServer };
+}
+
+export interface PinnedSession {
+  http: AdtHttpClient;
+  /** The server SAP pinned the session to; undefined when it did not say. */
+  instance?: string;
+  /** Sessions opened to find it (0 = none needed). */
+  probes: number;
+}
+
+/**
+ * Fallback after the stop: open sessions until one lands on the debuggee's server, ending the others;
+ * after `maxProbes` misses the last one is returned (the attach then reports the miss). Without a
+ * server to look for, or when SAP does not say where a session landed, the first session is used.
+ */
+export async function openSessionOnServer(
+  http: AdtHttpClient,
+  safety: SafetyConfig,
+  instance: string | undefined,
+  options: AdtRequestOptions & { maxProbes?: number } = {},
+): Promise<PinnedSession> {
+  checkDebug(safety, 'DebuggerOpenSession');
+  const { maxProbes = MAX_SERVER_PROBES, ...requestOptions } = options;
+  const wanted = instance?.trim().toUpperCase();
+  if (!wanted) return { http: http.openStatefulSession(), probes: 0 };
+  for (let probes = 1; ; probes++) {
+    const { session, server } = await probeSession(http, requestOptions);
+    if (!server || server.toUpperCase() === wanted || probes >= maxProbes) {
+      logger.debug('Debugger session opened after the stop', { debuggeeServer: instance, landed: server, probes });
+      return { http: session, ...(server ? { instance: server } : {}), probes };
+    }
+    await endSession(session, safety, requestOptions);
+  }
+}
+
+/** The application server a session is pinned to, from its `sap-contextid` (`SID:ANON:<server>:<id>`). */
+export function contextServer(contextId: string | undefined): string | undefined {
+  if (!contextId) return undefined;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(contextId);
+  } catch {
+    return undefined;
+  }
+  const parts = decoded.split(':');
+  return parts.length >= 4 && parts[0] === 'SID' && parts[2] ? parts[2] : undefined;
+}
+
+/**
+ * Best-effort: end a stateful session — one request on its own context that says
+ * `X-sap-adt-sessiontype: stateless` (abap-adt-api's `dropSession`).
+ */
+export async function endSession(
+  session: AdtHttpClient,
+  safety: SafetyConfig,
+  options: AdtRequestOptions = {},
+): Promise<void> {
+  checkDebug(safety, 'DebuggerEndSession');
+  if (!session.sessionContextId) return;
+  try {
+    await session.get(
+      SYSTEM_INFORMATION_PATH,
+      { Accept: SYSTEM_INFORMATION_ACCEPT, 'X-sap-adt-sessiontype': 'stateless' },
+      { ...options, suppressNotFoundLog: true },
+    );
+  } catch {
+    // best-effort: an unended session only lives until SAP's session timeout
+  }
 }
 
 // ─── Session documents ─────────────────────────────────────────────

@@ -4,7 +4,8 @@
  * ARC-1 is stateless HTTP, and a stopped debuggee holds a work process plus the request that ran it,
  * so the whole debugger loop completes inside ONE tool call (the same reasoning as "ADT locks never
  * cross an MCP round-trip"): arm breakpoints → long-poll the listener on the stateless client → run
- * the trigger → attach / read / step / release on one stateful session → always remove ARC-1's
+ * the trigger → attach / read / step / release on one stateful session, opened on the debuggee's
+ * application server (SAP attaches from no other) → always remove ARC-1's
  * breakpoints and the listener. The model gets a snapshot, never a remote control.
  * See docs/research/2026-10-22-abap-debugger-one-shot-capture.md.
  */
@@ -25,8 +26,13 @@ import {
   debuggerErrorSubType,
   debuggerErrorText,
   deleteBreakpoint,
+  endSession,
   findListenerConflict,
   listenForDebuggee,
+  openSessionOnServer,
+  openSessionsAhead,
+  type PinnedSession,
+  type SessionsAhead,
   stopListener,
   syncBreakpoints,
 } from '../adt/debugger.js';
@@ -34,6 +40,7 @@ import { runUnitTests } from '../adt/devtools.js';
 import { assertODataPerfUrl } from '../adt/diagnostics.js';
 import { AdtApiError } from '../adt/errors.js';
 import { mapSapReleaseToAbaplintVersion } from '../adt/features.js';
+import type { AdtHttpClient } from '../adt/http.js';
 import { checkDebug, checkOperation, OperationType } from '../adt/safety.js';
 import { getSessionUser, isPlausibleSapUser } from '../adt/session-user.js';
 import { extractMethod } from '../context/method-surgery.js';
@@ -57,6 +64,8 @@ const MAX_STACK_FRAMES = 15;
 const INSPECTION_BUDGET_MS = 120_000;
 /** Own budget for the release, so an exhausted inspection can never leave a debuggee suspended. */
 const RELEASE_BUDGET_MS = 60_000;
+/** Opening the sessions ahead of the run (a few cheap requests). */
+const AHEAD_BUDGET_MS = 20_000;
 const CLASS_INCLUDES = new Set(['implementations', 'testclasses']);
 
 const timings = {
@@ -285,14 +294,22 @@ interface RunningTrigger {
   settled: Promise<TriggerOutcome>;
 }
 
-function startTrigger(client: AdtClient, plan: TriggerPlan, fetchTimeoutMs: number): RunningTrigger | undefined {
+/** `session`: pinned ahead of the run — the unit tests, and so the debuggee, run on its server. */
+function startTrigger(
+  client: AdtClient,
+  plan: TriggerPlan,
+  fetchTimeoutMs: number,
+  session?: AdtHttpClient,
+): RunningTrigger | undefined {
   const options = { fetchTimeoutMs };
   let run: Promise<Record<string, unknown>>;
   if (plan.kind === 'unittest') {
-    run = runUnitTests(client.http, client.safety, plan.objectUrl, { requestOptions: options }).then((result) => ({
-      outcome: result.outcome,
-      ...result.summary,
-    }));
+    run = runUnitTests(session ?? client.http, client.safety, plan.objectUrl, { requestOptions: options }).then(
+      (result) => ({
+        outcome: result.outcome,
+        ...result.summary,
+      }),
+    );
   } else if (plan.kind === 'http') {
     run = client.http
       .get(plan.url, undefined, options)
@@ -654,9 +671,13 @@ async function runSteps(
   return steps;
 }
 
-/** A refusal SAP answered (4xx) leaves nothing attached; a transport failure leaves the state unknown. */
+/**
+ * A refusal SAP answered leaves nothing attached — a 4xx, or its "cannot attach" exception
+ * (`invalidDebuggee`, sent as a 500); a transport failure leaves the state unknown.
+ */
 function attachDefinitelyFailed(err: unknown): boolean {
-  return err instanceof AdtApiError && err.statusCode >= 400 && err.statusCode < 500;
+  if (!(err instanceof AdtApiError)) return false;
+  return (err.statusCode >= 400 && err.statusCode < 500) || debuggerErrorSubType(err) === 'invalidDebuggee';
 }
 
 async function inspect(
@@ -667,56 +688,73 @@ async function inspect(
   breakpointIds: readonly string[],
   onAttached: () => Promise<void>,
   warnings: string[],
+  ready: AdtHttpClient | undefined,
 ): Promise<Inspection> {
   if (debuggee.attachImpossible) {
+    if (ready) await endSession(ready, client.safety, { deadline: Date.now() + RELEASE_BUDGET_MS });
     return {
       attached: false,
       error:
         'SAP reports this debuggee cannot be attached (IS_ATTACH_IMPOSSIBLE), e.g. it runs on another application server.',
     };
   }
-  return client.http.withStatefulSession(async (sessionHttp) => {
-    const session = new DebuggerSession(sessionHttp, client.safety, identity, {
-      deadline: Date.now() + INSPECTION_BUDGET_MS,
-    });
-    let attachState: 'none' | 'attached' | 'unknown' = 'unknown';
-    const inspection: Inspection = { attached: false };
-    try {
-      const attach = await session.attach(debuggee.id);
-      attachState = 'attached';
-      inspection.attached = true;
-      if (attach.postMortem) warnings.push('SAP attached a post-mortem (short dump) session — inspection only.');
-      await onAttached();
-      inspection.stack = await session.stack();
-      inspection.variables =
-        req.variables.length > 0
-          ? await readNamedVariables(session, req.variables)
-          : await readFrameVariables(session, warnings);
-      if (req.steps > 0) {
-        const watch = (inspection.variables ?? [])
-          .filter((variable) => req.variables.includes(variable.name) && !variable.error)
-          .map((variable) => variable.name);
-        if (attach.steppingPossible) inspection.steps = await runSteps(session, req, watch, warnings);
-        else warnings.push('SAP reports stepping is not possible for this debuggee; steps were skipped.');
-      }
-    } catch (err) {
-      if (attachState === 'unknown' && attachDefinitelyFailed(err)) attachState = 'none';
-      const subType = debuggerErrorSubType(err);
-      inspection.error = `${debuggerErrorText(err)}${subType ? ` (${subType})` : ''}`;
-      if (subType === 'noSessionAttached') {
-        inspection.error +=
-          ' — the attach did not survive into the next request. Releases below 7.51 need the stateful-session support ADT writes also need (see issue #293).';
-      }
-    } finally {
-      if (attachState !== 'none') {
-        const releaser = new DebuggerSession(sessionHttp, client.safety, identity, {
-          deadline: Date.now() + RELEASE_BUDGET_MS,
-        });
-        inspection.release = await releaser.release(breakpointIds);
-      }
+  const deadline = Date.now() + INSPECTION_BUDGET_MS;
+  let pinned: PinnedSession;
+  try {
+    pinned = ready
+      ? { http: ready, instance: debuggee.instance, probes: 0 }
+      : await openSessionOnServer(client.http, client.safety, debuggee.instance, { deadline });
+  } catch (err) {
+    return { attached: false, error: `Could not open a debugger session: ${debuggerErrorText(err)}` };
+  }
+  const sessionHttp = pinned.http;
+  const session = new DebuggerSession(sessionHttp, client.safety, identity, { deadline });
+  let attachState: 'none' | 'attached' | 'unknown' = 'unknown';
+  const inspection: Inspection = { attached: false };
+  try {
+    const attach = await session.attach(debuggee.id);
+    attachState = 'attached';
+    inspection.attached = true;
+    if (attach.postMortem) warnings.push('SAP attached a post-mortem (short dump) session — inspection only.');
+    await onAttached();
+    inspection.stack = await session.stack();
+    inspection.variables =
+      req.variables.length > 0
+        ? await readNamedVariables(session, req.variables)
+        : await readFrameVariables(session, warnings);
+    if (req.steps > 0) {
+      const watch = (inspection.variables ?? [])
+        .filter((variable) => req.variables.includes(variable.name) && !variable.error)
+        .map((variable) => variable.name);
+      if (attach.steppingPossible) inspection.steps = await runSteps(session, req, watch, warnings);
+      else warnings.push('SAP reports stepping is not possible for this debuggee; steps were skipped.');
     }
-    return inspection;
-  });
+  } catch (err) {
+    if (attachState === 'unknown' && attachDefinitelyFailed(err)) attachState = 'none';
+    const subType = debuggerErrorSubType(err);
+    inspection.error = `${debuggerErrorText(err)}${subType ? ` (${subType})` : ''}`;
+    if (subType === 'noSessionAttached') {
+      inspection.error +=
+        ' — the attach did not survive into the next request. Releases below 7.51 need the stateful-session support ADT writes also need (see issue #293).';
+    }
+    const elsewhere =
+      pinned.instance && debuggee.instance && pinned.instance.toUpperCase() !== debuggee.instance.toUpperCase();
+    if (subType === 'invalidDebuggee' && elsewhere) {
+      inspection.error += ` — SAP attaches only from the debuggee's application server (${debuggee.instance}), and none of ${pinned.probes} new sessions landed there (the last on ${pinned.instance}): while a debuggee waits, SAP's load balancer sends new sessions elsewhere. Retry the capture.`;
+    }
+  } finally {
+    if (attachState !== 'none') {
+      const releaser = new DebuggerSession(sessionHttp, client.safety, identity, {
+        deadline: Date.now() + RELEASE_BUDGET_MS,
+      });
+      inspection.release = await releaser.release(breakpointIds);
+    }
+    // A debuggee that could not be released keeps its debugger session; any other ends here.
+    if (attachState === 'none' || inspection.release?.released) {
+      await endSession(sessionHttp, client.safety, { deadline: Date.now() + RELEASE_BUDGET_MS });
+    }
+  }
+  return inspection;
 }
 
 // ─── Capture ───────────────────────────────────────────────────────
@@ -731,6 +769,27 @@ function notHitHint(req: DebugRequest, user: string, triggerFinished: boolean): 
   }
   if (triggerFinished) return `The trigger finished without reaching the breakpoint.${race}`;
   return `Nothing stopped within ${req.timeoutSeconds}s. With trigger="none", run the code as SAP user ${user} (the same user) while the capture waits — e.g. open the Fiori app or run the report — and retry.`;
+}
+
+/**
+ * Sessions opened before the run (see `openSessionsAhead`). Only ARC-1's unit-test trigger can run on
+ * one; for the others the pair's second session is ended at once. A failure only costs the pinning.
+ */
+async function openAhead(client: AdtClient, plan: TriggerPlan, warnings: string[]): Promise<SessionsAhead> {
+  let ahead: SessionsAhead;
+  try {
+    ahead = await openSessionsAhead(client.http, client.safety, { deadline: Date.now() + AHEAD_BUDGET_MS });
+  } catch (err) {
+    warnings.push(
+      `Could not open debugger sessions ahead of the run (${debuggerErrorText(err)}); the attach looks for the debuggee's server after the stop instead.`,
+    );
+    return { byServer: new Map() };
+  }
+  if (ahead.trigger && plan.kind !== 'unittest') {
+    await endSession(ahead.trigger, client.safety, { deadline: Date.now() + AHEAD_BUDGET_MS });
+    return { byServer: ahead.byServer };
+  }
+  return ahead;
 }
 
 async function runCapture(client: AdtClient, req: DebugRequest, user: string): Promise<ToolResult> {
@@ -751,6 +810,8 @@ async function runCapture(client: AdtClient, req: DebugRequest, user: string): P
   }
 
   const armedIds: string[] = [];
+  let ahead: SessionsAhead = { byServer: new Map() };
+  let attachedFrom: AdtHttpClient | undefined;
   let listenerStarted = false;
   let externalCleared = false;
   let tornDown = false;
@@ -767,6 +828,10 @@ async function runCapture(client: AdtClient, req: DebugRequest, user: string): P
     tornDown = true;
     listenAbort.abort();
     await clearExternal();
+    for (const session of ahead.byServer.values()) {
+      if (session !== attachedFrom)
+        await endSession(session, client.safety, { deadline: Date.now() + RELEASE_BUDGET_MS });
+    }
     if (!listenerStarted) return;
     try {
       await stopListener(client.http, client.safety, identity.user);
@@ -777,6 +842,9 @@ async function runCapture(client: AdtClient, req: DebugRequest, user: string): P
   const settleTrigger = async (): Promise<Record<string, unknown> | undefined> => {
     if (!running) return undefined;
     const settled = await Promise.race([running.settled, sleep(timings.triggerSettleMs).then(() => undefined)]);
+    // The trigger's session ends with its run; a run still going keeps it until SAP's session timeout.
+    if (settled && ahead.trigger)
+      await endSession(ahead.trigger, client.safety, { deadline: Date.now() + RELEASE_BUDGET_MS });
     return settled ?? { status: 'running', note: 'still running when the capture returned' };
   };
 
@@ -788,6 +856,7 @@ async function runCapture(client: AdtClient, req: DebugRequest, user: string): P
       );
     }
 
+    ahead = await openAhead(client, plan, warnings);
     listenerStarted = true;
     const listen: Promise<ListenSettled> = listenForDebuggee(client.http, client.safety, identity, req.timeoutSeconds, {
       signal: listenAbort.signal,
@@ -795,7 +864,12 @@ async function runCapture(client: AdtClient, req: DebugRequest, user: string): P
 
     if (plan.kind !== 'none') {
       await sleep(timings.armDelayMs);
-      running = startTrigger(client, plan, req.timeoutSeconds * 1000 + INSPECTION_BUDGET_MS + RELEASE_BUDGET_MS);
+      running = startTrigger(
+        client,
+        plan,
+        req.timeoutSeconds * 1000 + INSPECTION_BUDGET_MS + RELEASE_BUDGET_MS,
+        ahead.trigger,
+      );
     }
     const first = await Promise.race([
       listen.then((outcome) => ({ source: 'listener' as const, outcome })),
@@ -835,7 +909,8 @@ async function runCapture(client: AdtClient, req: DebugRequest, user: string): P
     }
 
     const { debuggee } = outcome;
-    const inspection = await inspect(client, identity, debuggee, req, armed.ids, clearExternal, warnings);
+    attachedFrom = debuggee.instance ? ahead.byServer.get(debuggee.instance.toUpperCase()) : undefined;
+    const inspection = await inspect(client, identity, debuggee, req, armed.ids, clearExternal, warnings, attachedFrom);
     await teardown();
     const triggerOutcome = await settleTrigger();
     if (inspection.release && !inspection.release.released) {
@@ -855,6 +930,7 @@ async function runCapture(client: AdtClient, req: DebugRequest, user: string): P
           include: debuggee.include,
           ...(debuggee.line !== undefined ? { line: debuggee.line } : {}),
           ...(debuggee.kind ? { kind: debuggee.kind } : {}),
+          ...(debuggee.instance ? { server: debuggee.instance } : {}),
         },
         attached: inspection.attached,
         ...(stack[0] ? { stoppedAt: describeFrame(stack[0]) } : {}),

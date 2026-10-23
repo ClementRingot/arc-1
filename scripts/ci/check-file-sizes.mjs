@@ -56,6 +56,10 @@ const BUDGETS = {
   // the default. Keep tight headroom.
   // + getFunctionModuleProperties and the getFunctionGroup pre-7.52 objectstructure fallback.
   'src/adt/client.ts': 1730,
+  // The HTTP transport sat at the default (1498/1500). +6 for the debugger's server pinning
+  // (openStatefulSession, the sessionContextId accessor); the routing itself lives in debugger.ts.
+  // Split cookie/session handling out of this file before raising it again.
+  'src/adt/http.ts': 1510,
 };
 
 const DEFAULT_SRC = 1500;

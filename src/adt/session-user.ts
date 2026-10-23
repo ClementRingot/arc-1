@@ -16,7 +16,7 @@ import type { AdtHttpClient } from './http.js';
 import { checkOperation, OperationType, type SafetyConfig } from './safety.js';
 
 export const SYSTEM_INFORMATION_PATH = '/sap/bc/adt/core/http/systeminformation';
-const SYSTEM_INFORMATION_ACCEPT = 'application/vnd.sap.adt.core.http.systeminformation.v1+json';
+export const SYSTEM_INFORMATION_ACCEPT = 'application/vnd.sap.adt.core.http.systeminformation.v1+json';
 /** Statuses that mean "this release has no such resource", as opposed to a failed request. */
 const ABSENT_STATUSES = new Set([404, 405, 406, 501]);
 
