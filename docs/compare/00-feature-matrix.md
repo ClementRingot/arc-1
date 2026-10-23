@@ -225,7 +225,7 @@ The npm-graph CycloneDX quick win is now shipped. Remaining Tier 2 work (image/M
 | OData perf probe (sap-statistics) | ✅ (`SAPDiagnose action=odata_perf`, gw* timing split + routing verdict; verified 750/758/816) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
 | CDS Show-SQL (createstatements) | ✅ (`SAPDiagnose action=cds_sql`, native CREATE VIEW; verified 750/758/816) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
 | Authorization trace (SUAUTHVALTRC / STUSERTRACE) | ✅ (`SAPDiagnose action=authorization_trace`, on-prem, data-preview gated) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
-| ABAP debugger | ⚠️ (`SAPDiagnose action=debug`: opt-in one-shot capture — breakpoint → unit test / OData GET / manual run → stack + variables + steps → released in one call; ADT REST only, no ZADT_VSP; pending live verification) | ⚠️ (Eclipse debugger, IDE-side, not MCP) | ✅ (8 tools) | ✅ | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
+| ABAP debugger | ⚠️ (`SAPDiagnose action=debug`: opt-in one-shot capture — breakpoints → unit test / OData GET / manual run → stack + variables + steps at each stop of one run (loops via `hits`, step into/over/out) → released in one call; ADT REST only, no ZADT_VSP; pending live verification) | ⚠️ (Eclipse debugger, IDE-side, not MCP) | ✅ (8 tools) | ✅ | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
 | AMDP/HANA debugger | ❌ | ⚠️ (Eclipse, IDE-side) | ✅ (7 tools) | ❌ | ❌ | ❌ | ❌ | N/A | ❌ | ❌ |
 | Execute with profiling | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | N/A | ❌ | ❌ |
 

@@ -1219,9 +1219,17 @@ describe('SAPDiagnose action="debug" visibility', () => {
   it('lists the action, its description line and its properties with SAP_ALLOW_DEBUG + data preview', () => {
     const config = { ...DEFAULT_CONFIG, allowDebug: true, allowDataPreview: true };
     expect(actions(config)).toContain('debug');
-    expect(diagnose(config)?.description).toContain('- "debug": one-shot debugger capture');
+    expect(diagnose(config)?.description).toContain('- "debug": one-shot capture of ONE run');
     expect(Object.keys(diagnose(config)?.inputSchema.properties as object)).toEqual(
-      expect.arrayContaining(['method', 'include', 'exceptionClass', 'trigger', 'triggerName', 'variables', 'steps']),
+      expect.arrayContaining([
+        'breakpoints',
+        'exceptionClass',
+        'trigger',
+        'triggerName',
+        'variables',
+        'steps',
+        'stepMode',
+      ]),
     );
   });
 });

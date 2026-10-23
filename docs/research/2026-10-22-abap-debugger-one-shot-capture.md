@@ -103,7 +103,8 @@ removes the registration through it.
 | Stack | `GET /sap/bc/adt/debugger/stack?method=getStack&emode=_&semanticURIs=true`; **7.50 has no `/debugger/stack`** (404) → `POST /sap/bc/adt/debugger?method=getStack&emode=_&semanticURIs=true` (A gates on discovery, S retries on 404 — live 7.50). | `<dbg:stack><stackEntry stackPosition stackType stackUri programName includeName line eventType eventName sourceType systemProgram isVit uri/>`. |
 | Variables | `POST /sap/bc/adt/debugger?method=getVariables`, body `<asx:abap><asx:values><DATA><STPDA_ADT_VARIABLE><ID>LV_X</ID></STPDA_ADT_VARIABLE>…`, `Content-Type: application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.debugger.Variables` | Rows `STPDA_ADT_VARIABLE` (`ID`, `NAME`, `DECLARED_TYPE_NAME`, `ACTUAL_TYPE_NAME`, `META_TYPE`, `VALUE`, `TECHNICAL_TYPE`, `LENGTH`, `TABLE_LINES`, `IS_VALUE_INCOMPLETE`, …). Table rows are addressed as `ITAB[1]` (V). |
 | Child variables | `POST /sap/bc/adt/debugger?method=getChildVariables`, body `<DATA><HIERARCHIES><STPDA_ADT_VARIABLE_HIERARCHY><PARENT_ID>@ROOT</PARENT_ID>…`, `dataname=com.sap.adt.debugger.ChildVariables` | `HIERARCHIES` (`PARENT_ID`, `CHILD_ID`, `CHILD_NAME`) + `VARIABLES`. `@ROOT`'s children are the frame's scopes (V lists them as the Variables-view scopes); several parents fit in one request. Structure components = children of the structure id (V). |
-| Step | `POST /sap/bc/adt/debugger?method=stepInto|stepOver|stepReturn|stepContinue|stepRunToLine|stepJumpToLine|terminateDebuggee` | `<dbg:step …>`. `stepContinue` answering 200 = stopped again (still attached); exception `debuggeeEnded` / `noSessionAttached` = released (S). |
+| Step | `POST /sap/bc/adt/debugger?method=stepInto|stepOver|stepReturn|stepContinue|stepRunToLine|stepJumpToLine|terminateDebuggee` | `<dbg:step …>`, optionally `<reachedBreakpoints><breakpoint id kind/>` (A types `DebugStep.reachedBreakpoints?`). `stepContinue` answering 200 = stopped again at the next breakpoint (still attached); exception `debuggeeEnded` / `noSessionAttached` = released (S). |
+| Session breakpoints | `POST /sap/bc/adt/debugger/breakpoints` with `scope="debugger"`, or `DELETE …/breakpoints/{id}?scope=debugger&debuggingMode&requestUser&terminalId&ideId`, **on the attached session** | The attached run keeps its own copies of the breakpoints, separate from the external ones: V syncs/deletes `scope: "debugger"` on each active thread's client next to the external change. ARC-1 deletes one copy to retire a breakpoint from the run (`hits` reached) and clears them all for the release. |
 | Release | `method=detach` is **unknown on 7.58** (400 "Unknown method") → `stepContinue` until `debuggeeEnded` (S); V does the same (`stepContinue`, falling back to dropping the session). | `terminateDebuggee` kills the user's session — last resort only. |
 
 Accept: S found that naming a concrete media type makes ADT answer **404 "No suitable resource found"**
@@ -189,27 +190,42 @@ model needs must be asked for up front (`variables`, `steps`), which also keeps 
 
 | Parameter | Meaning |
 |---|---|
-| `type` + `name` | Object holding the breakpoint: `CLAS`, `PROG`, `FUNC`. |
-| `line` / `method` | 1-based line in the object's main source (or in `include`), or a `CLAS` method (`get_total`, `lhc_travel~validate`, `zif_x~run`) → ARC-1 resolves the `METHOD` line with `extractMethod` and walks forward to the first line SAP accepts. |
-| `include` | `CLAS` only: `implementations` / `testclasses` — the include `line` refers to (auto-detected for `lhc_`/`lcl_`/`ltc_` methods). |
-| `exceptionClass` | Optional exception breakpoint (with or without a line breakpoint). |
+| `type` + `name` | The object `line` refers to, the default object of every `breakpoints` item, and the default unit-test trigger: `CLAS`, `PROG`, `FUNC`. |
+| `breakpoints` | The stops of the run (max 6), each `{ line \| method, include?, hits?, type?, name? }`: a 1-based line in the object's main source (or in `include`), or a `CLAS` method (`get_total`, `lhc_travel~validate`, `zif_x~run`) → ARC-1 resolves the `METHOD` line with `extractMethod` and walks forward to the first line SAP accepts. `include` (`CLAS`): `implementations` / `testclasses` (auto-detected for `lhc_`/`lcl_`/`ltc_` methods). `hits` (1–10, default 1): stops this breakpoint may make — a loop. `type`/`name` per item let one run stop in several objects. |
+| `line` | Shorthand for one line breakpoint in `type` + `name`. |
+| `exceptionClass` | Optional exception breakpoint (with or without line breakpoints); stops once. |
 | `trigger` | `unittest` (default): harmless ABAP Unit of `triggerName` (a CLAS/PROG/FUGR resolved by exact repository match; default: the breakpoint object, FUNC → its FUGR). `http`: GET of `url` — a host-relative OData path, same guard as `odata_perf`. `none`: wait while *you* run it (Fiori app, SE38, Postman) as the same SAP user. |
-| `variables` | Variable expressions to read at the stop and after every step (`LV_TOTAL`, `LS_HEAD-VBELN`, `LT_ITEMS`, `ME->MV_STATE`, `SY-SUBRC`). Default: the stopped frame's variables (children of `@ROOT`'s scopes). |
-| `steps` | 0–20 `stepOver`s after the stop, each recording position + `variables`. |
-| `timeoutSeconds` | How long to wait for the hit (1–240, default 60). |
+| `variables` | Variable expressions to read at every stop and after every step (`LV_TOTAL`, `LS_HEAD-VBELN`, `LT_ITEMS`, `ME->MV_STATE`, `SY-SUBRC`). Default: the stopped frame's variables (children of `@ROOT`'s scopes). |
+| `steps` / `stepMode` | 0–20 steps after each stop (at most 40 per capture), each recording position + `variables`; `over` (default), `into` (`stepInto`: follow calls) or `out` (`stepReturn`: back to the caller). |
+| `timeoutSeconds` | How long to wait for the first stop (1–240, default 60). |
 
 Flow: ask SAP who the session is (§7.3) → per-user in-process mutex + per-instance capture cap →
-conflict check → set breakpoints (fresh `ideId`,
-full sync) → start the long poll (stateless) → arm delay → start the trigger → race (hit / trigger
-finished / timeout) → attach + stack + variables + steps on one stateful session on the debuggee's
-application server, opened before the run (§3.6) → release
-(clear session breakpoints, `stepContinue` until ended; `terminateDebuggee` only as last resort) →
-always: clear external breakpoints, delete the listener, settle the trigger.
+conflict check → set breakpoints (fresh `ideId`, full sync: every location's candidate lines in one
+probe POST, then one line per location) → start the long poll (stateless) → arm delay → start the
+trigger → race (hit / trigger finished / timeout) → attach on one stateful session on the debuggee's
+application server, opened before the run (§3.6) → clear the external breakpoints (the run keeps its
+session copies) → **follow the run stop by stop**: stack + variables + steps; a breakpoint that has
+made its `hits` is deleted from the session (`scope=debugger`); `stepContinue` to the next stop →
+until no breakpoint is left, the program ends, or a cap (10 stops, 40 steps, the 120 s inspection
+budget) is reached → release (clear session breakpoints, `stepContinue` until ended;
+`terminateDebuggee` only as last resort) → always: delete the listener, settle the trigger.
 
-Output (JSON): `hit`, `debuggee` (incl. `server`), `breakpoints` (set / refused with SAP's message), `stoppedAt`,
-`stack` (customer frames, system frames counted), `variables` (simple values, one level of structure
+Which breakpoint a stop belongs to: the id SAP names in `reachedBreakpoints` (attach / step), else
+the line breakpoint at the top frame's `uri` position, else the only one armed; otherwise the stop is
+reported without `at` and retires nothing (bounded by the caps).
+
+Why one run with several stops rather than several captures: every capture re-runs the trigger from
+the start — time, possibly different data, repeated side effects, and with `trigger="none"` the user
+has to act again. `stepRunToLine` is not used: a second breakpoint plus `stepContinue` reaches the
+same line and also covers other objects.
+
+Output (JSON): `hit`, `debuggee` (incl. `server`), `breakpoints` (set with the `hits` it made, refused
+with SAP's message, or `duplicate` of another location on the same line), `stops` (each `stop`, `at`,
+`hit` for repeating breakpoints, `stoppedAt`, `stack` + `hiddenSystemFrames` on a breakpoint's first
+stop — a loop's later stops would repeat it —, `variables` (simple values, one level of structure
 components, first table rows; values truncated), `steps` (each watched variable, structures by their
-components), `release`, `trigger` (outcome; `server` when ARC-1 pinned its run), `warnings`.
+components)), `release`, `trigger` (outcome; `server` when ARC-1 pinned its run), `warnings`
+(deduplicated).
 
 ## 6. ARC-1 impact
 
@@ -348,3 +364,10 @@ run long enough to probe the poll timeout under PP (11).
     unknown) and record a real body in `tests/fixtures/`.
 11. PP through the Cloud Connector: confirm the long poll (`timeoutSeconds` + 30 s) survives the
     connectivity proxy and Cloud Connector timeouts, or lower the maximum `timeoutSeconds` there.
+12. Several stops in one run (§5, not yet live): after the attach has deleted the external
+    breakpoints, the run still stops at the next one (`stepContinue` answers 200 + `<dbg:step>` there,
+    i.e. the session copies are independent); a loop breakpoint with `hits: 3` stops three times and,
+    once its session copy is deleted (`DELETE …?scope=debugger` on the attached session), no more;
+    `reachedBreakpoints` on attach/step carries the external ids (else the stop is placed from the
+    stack's `uri`); `stepInto` enters a called method and `stepReturn` comes back to the caller with
+    the same `<dbg:step>` answer. Record the bodies as fixtures.

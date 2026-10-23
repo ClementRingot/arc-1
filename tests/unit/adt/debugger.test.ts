@@ -565,9 +565,47 @@ describe('DebuggerSession', () => {
         .mockRejectedValueOnce(new AdtApiError('boom', 500, '/x', debuggerException('internalError'))),
     });
     const session = new DebuggerSession(http, SAFETY, IDENTITY);
-    expect(await session.step('stepOver')).toEqual({ status: 'stopped', steppingPossible: false });
+    expect(await session.step('stepOver')).toEqual({
+      status: 'stopped',
+      steppingPossible: false,
+      reachedBreakpoints: [],
+    });
     expect(await session.step('stepOver')).toEqual({ status: 'ended', reason: 'debuggeeEnded' });
     await expect(session.step('stepOver')).rejects.toThrow(AdtApiError);
+  });
+
+  it('names the breakpoint a stepContinue stopped at, when SAP reports it', async () => {
+    const http = mockHttp({
+      post: vi
+        .fn()
+        .mockResolvedValue(
+          ok(
+            '<dbg:step xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true"><reachedBreakpoints><breakpoint id="KIND=0.LINE_NR=40" kind="line"/></reachedBreakpoints></dbg:step>',
+          ),
+        ),
+    });
+    const session = new DebuggerSession(http, SAFETY, IDENTITY);
+    expect(await session.step('stepContinue')).toEqual({
+      status: 'stopped',
+      steppingPossible: true,
+      reachedBreakpoints: ['KIND=0.LINE_NR=40'],
+    });
+    expect(http.post.mock.calls[0]?.[0]).toBe('/sap/bc/adt/debugger?method=stepContinue');
+  });
+
+  it('retires one breakpoint from the attached run by deleting its session copy', async () => {
+    const http = mockHttp();
+    const session = new DebuggerSession(http, SAFETY, IDENTITY, { deadline: 123 });
+    await session.removeBreakpoint('KIND=0.LINE_NR=40');
+    const [url, , options] = http.delete.mock.calls[0] as [string, unknown, unknown];
+    expect(url.startsWith('/sap/bc/adt/debugger/breakpoints/KIND%3D0.LINE_NR%3D40?')).toBe(true);
+    const query = new URLSearchParams(url.split('?')[1]);
+    expect(query.get('scope')).toBe('debugger');
+    expect(query.get('requestUser')).toBe('DEVELOPER');
+    expect(options).toEqual({ deadline: 123 });
+    await expect(
+      new DebuggerSession(http, { ...SAFETY, allowDebug: false }, IDENTITY).removeBreakpoint('X'),
+    ).rejects.toThrow(AdtSafetyError);
   });
 
   describe('release', () => {

@@ -12,8 +12,9 @@
  *   `openSessionOnServer()` returns;
  * - every request is preceded by `checkDebug` (SAP_ALLOW_DEBUG + SAP_ALLOW_DATA_PREVIEW).
  *
- * Deliberately absent: variable writes (`setVariableValue`), `stepJumpToLine`/`stepRunToLine` and
- * system debugging — ARC-1 observes a run, it never changes what the program does.
+ * Deliberately absent: variable writes (`setVariableValue`), `stepJumpToLine` and system debugging —
+ * ARC-1 observes a run, it never changes what the program does. `stepRunToLine` is not needed: a
+ * second breakpoint plus `stepContinue` reaches the same line.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -712,7 +713,9 @@ export function buildChildVariablesXml(parents: readonly string[]): string {
 
 export type DebugStepMethod = 'stepInto' | 'stepOver' | 'stepReturn' | 'stepContinue' | 'terminateDebuggee';
 
-export type DebugStepResult = { status: 'stopped'; steppingPossible: boolean } | { status: 'ended'; reason: string };
+export type DebugStepResult =
+  /** `reachedBreakpoints`: ids of the breakpoints the run stopped at, when SAP names them. */
+  { status: 'stopped'; steppingPossible: boolean; reachedBreakpoints: string[] } | { status: 'ended'; reason: string };
 
 export interface DebugReleaseResult {
   released: boolean;
@@ -831,12 +834,26 @@ export class DebuggerSession {
       if (exception && isEndedSubType(exception.subType)) return { status: 'ended', reason: exception.subType ?? '' };
       const node = asNode(parseDocument(resp.body).step) ?? {};
       const stepping = attr(node, 'isSteppingPossible');
-      return { status: 'stopped', steppingPossible: stepping === '' ? true : flag(stepping) };
+      return {
+        status: 'stopped',
+        steppingPossible: stepping === '' ? true : flag(stepping),
+        reachedBreakpoints: asNodes(asNode(node.reachedBreakpoints)?.breakpoint)
+          .map((bp) => attr(bp, 'id'))
+          .filter(Boolean),
+      };
     } catch (err) {
       const subType = debuggerErrorSubType(err);
       if (isEndedSubType(subType)) return { status: 'ended', reason: subType ?? '' };
       throw err;
     }
+  }
+
+  /**
+   * Stop this run from stopping at one breakpoint again: delete its session copy (the external one
+   * is gone since the attach), as vscode_abap_remote_fs does for an attached thread.
+   */
+  async removeBreakpoint(id: string): Promise<void> {
+    await deleteBreakpoint(this.http, this.safety, this.identity, id, 'debugger', this.options);
   }
 
   /**

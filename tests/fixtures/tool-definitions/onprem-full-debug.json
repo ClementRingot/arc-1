@@ -1139,7 +1139,7 @@
   },
   {
     "name": "SAPDiagnose",
-    "description": "Run diagnostics on ABAP objects and analyze runtime errors. Actions:\n- \"syntax\": syntax-check (name+type; optional version; optional source = pre-write dry-run, nothing written).\n- \"unittest\": harmless ABAP Unit for CLAS/PROG/FUGR or DEVC (exact; includeSubpackages recurses).\n- \"atc\": run ATC checks (name+type; optional variant). \"atc_variants\": list variants + the system default (variant = name filter; read-only).\n- \"cds_testcases\": SAP-suggested ABAP Unit test cases for a CDS entity (name; read-only; SAP_BASIS 8.16+).\n- \"object_state\": compare active vs inactive source versions (name+type; CLAS compares all includes). Returns ETags/hashes/divergence flags.\n- \"quickfix\": get quick-fix proposals at a position (name+type+source+line; optional column, sourceUri).\n- \"apply_quickfix\": apply one proposal, return text deltas, no write (name+type+source+line+proposalUri+proposalUserContent; pass proposalUserContent through exactly).\n- \"dumps\": list/read ST22 short dumps (no id = list; id = read; includeFullText, sections).\n- \"traces\": list/analyze profiler traces (id+analysis: hitlist=hot spots, statements=call tree, dbAccesses=DB stats).\n- \"trace_start\": arm a profiler trace for the NEXT matching execution, then reproduce and read via \"traces\" (write scope; defaults: next HTTP request, SQL on).\n- \"trace_requests\": list armed trace requests. \"trace_cancel\": cancel one by id (write scope).\n- \"system_messages\": list SM02 messages. \"gateway_errors\": list /IWFND/ERROR_LOG (on-prem; detailUrl or id+errorType for detail).\n- \"odata_perf\": diagnose why an OData call is slow (url = host-relative path); returns the sap-statistics timing split (DB/ABAP/framework/auth). Read-only; needs allowDataPreview.\n- \"authorization_trace\": read the on-prem STUSERTRACE auth trace (SUAUTHVALTRC); needs SAP_ALLOW_DATA_PREVIEW.\n- \"cds_sql\": show the native SQL a CDS view compiles to (name; read-only).\n- \"sql_trace_state\" / \"set_sql_trace_state\" (sqlOn; needs SAP_ALLOW_WRITES) / \"sql_trace_directory\": ST05 SQL-trace control.\n- \"debug\": one-shot debugger capture: breakpoint (type+name+line|method, and/or exceptionClass) → trigger → stack + variables at the stop (+steps) → released; nothing stays stopped, so request every variable up front. line: 1-based, as SAPRead numbers it; timeoutSeconds: wait for the hit (60, max 240).\nQuickfix workflow: syntax/ATC → quickfix → apply_quickfix → write via SAPWrite. Full action reference: docs_page SAPDiagnose.",
+    "description": "Run diagnostics on ABAP objects and analyze runtime errors. Actions:\n- \"syntax\": syntax-check (name+type; optional version; optional source = pre-write dry-run, nothing written).\n- \"unittest\": harmless ABAP Unit for CLAS/PROG/FUGR or DEVC (exact; includeSubpackages recurses).\n- \"atc\": run ATC checks (name+type; optional variant). \"atc_variants\": list variants + the system default (variant = name filter; read-only).\n- \"cds_testcases\": SAP-suggested ABAP Unit test cases for a CDS entity (name; read-only; SAP_BASIS 8.16+).\n- \"object_state\": compare active vs inactive source versions (name+type; CLAS compares all includes). Returns ETags/hashes/divergence flags.\n- \"quickfix\": get quick-fix proposals at a position (name+type+source+line; optional column, sourceUri).\n- \"apply_quickfix\": apply one proposal, return text deltas, no write (name+type+source+line+proposalUri+proposalUserContent; pass proposalUserContent through exactly).\n- \"dumps\": list/read ST22 short dumps (no id = list; id = read; includeFullText, sections).\n- \"traces\": list/analyze profiler traces (id+analysis: hitlist=hot spots, statements=call tree, dbAccesses=DB stats).\n- \"trace_start\": arm a profiler trace for the NEXT matching execution, then reproduce and read via \"traces\" (write scope; defaults: next HTTP request, SQL on).\n- \"trace_requests\": list armed trace requests. \"trace_cancel\": cancel one by id (write scope).\n- \"system_messages\": list SM02 messages. \"gateway_errors\": list /IWFND/ERROR_LOG (on-prem; detailUrl or id+errorType for detail).\n- \"odata_perf\": diagnose why an OData call is slow (url = host-relative path); returns the sap-statistics timing split (DB/ABAP/framework/auth). Read-only; needs allowDataPreview.\n- \"authorization_trace\": read the on-prem STUSERTRACE auth trace (SUAUTHVALTRC); needs SAP_ALLOW_DATA_PREVIEW.\n- \"cds_sql\": show the native SQL a CDS view compiles to (name; read-only).\n- \"sql_trace_state\" / \"set_sql_trace_state\" (sqlOn; needs SAP_ALLOW_WRITES) / \"sql_trace_directory\": ST05 SQL-trace control.\n- \"debug\": one-shot capture of ONE run: breakpoints/line/exceptionClass -> trigger -> per stop: stack + variables (+steps) -> released; request every variable up front. line: 1-based as in SAPRead; timeoutSeconds: wait for the first hit (60, max 240).\nQuickfix workflow: syntax/ATC → quickfix → apply_quickfix → write via SAPWrite. Full action reference: docs_page SAPDiagnose.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1377,17 +1377,32 @@
           "type": "string",
           "description": "For trace_start: optional label for the trace request."
         },
-        "method": {
-          "type": "string",
-          "description": "debug: CLAS method instead of line (get_total, lhc_x~check)."
-        },
-        "include": {
-          "type": "string",
-          "enum": [
-            "implementations",
-            "testclasses"
-          ],
-          "description": "debug: CLAS include of line (auto for lhc_/lcl_/ltc_ methods)."
+        "breakpoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "line": {
+                "type": "number"
+              },
+              "method": {
+                "type": "string"
+              },
+              "include": {
+                "type": "string"
+              },
+              "hits": {
+                "type": "number"
+              }
+            }
+          },
+          "description": "debug: stops in this run (max 6): line|method (CLAS: get_total, lhc_x~check), include (implementations|testclasses; auto for lhc_/lcl_/ltc_), hits (1-10, for loops); type/name default to the top-level."
         },
         "exceptionClass": {
           "type": "string",
@@ -1400,7 +1415,7 @@
             "http",
             "none"
           ],
-          "description": "debug: unittest (default; harmless ABAP Unit of triggerName, else the breakpoint object), http (GET url), none (you run it as the same SAP user)."
+          "description": "debug: unittest (default: harmless ABAP Unit of triggerName or the breakpoint object), http (GET url), none (you run it, same SAP user)."
         },
         "triggerName": {
           "type": "string",
@@ -1411,11 +1426,20 @@
           "items": {
             "type": "string"
           },
-          "description": "debug: read at the stop and per step (LV_X, LS_S-F, LT_T, ME->MV_A); default: frame variables."
+          "description": "debug: read at each stop/step (LV_X, LS_S-F, LT_T, ME->MV_A); default: frame variables."
         },
         "steps": {
           "type": "number",
-          "description": "debug: stepOver count after the stop (0-20)."
+          "description": "debug: steps after each stop (0-20)."
+        },
+        "stepMode": {
+          "type": "string",
+          "enum": [
+            "over",
+            "into",
+            "out"
+          ],
+          "description": "debug: how steps move (default over)."
         }
       },
       "required": [

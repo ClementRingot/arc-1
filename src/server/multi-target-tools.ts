@@ -77,13 +77,13 @@ const MULTI_TARGET_ACTION_RULES = new Map<
       // `debug` is outside the reviewed multi-target surface (it suspends a work process); its
       // properties only exist when SAP_ALLOW_DEBUG is on and would point the model at a refusal.
       omittedProperties: new Set([
-        'method',
-        'include',
+        'breakpoints',
         'exceptionClass',
         'trigger',
         'triggerName',
         'variables',
         'steps',
+        'stepMode',
       ]),
     },
   ],

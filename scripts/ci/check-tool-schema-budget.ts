@@ -220,9 +220,10 @@ export const TOOL_SCHEMA_SCENARIOS: ToolSchemaScenario[] = [
     resolvedFeatures: ALL_FEATURES_AVAILABLE,
     budget: {
       // The opt-in SAPDiagnose action="debug" (SAP_ALLOW_DEBUG) on top of the full write surface:
-      // ~1.3 KB / 7 property descriptions, listed only when an admin enables debugger captures.
-      // Measured 71.7 KB / ~17.9k schema tokens / 272 descriptions — the debug texts were trimmed to
-      // stay under the 72 KB wall; trim them again (not the wall) if the full surface grows.
+      // ~1.5 KB / 7 property descriptions, listed only when an admin enables debugger captures.
+      // Measured 71.94 KB / ~17.99k schema tokens / 272 descriptions after the multi-stop parameters
+      // (breakpoints[] with per-stop hits, stepMode) — the debug texts were trimmed to stay under the
+      // 72 KB wall; trim them again (not the wall) if the full surface grows.
       schemaTokenEstimate: 18_000,
       descriptionTokenEstimate: 12_700,
       descriptionCount: 275,

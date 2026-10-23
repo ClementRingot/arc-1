@@ -4,9 +4,10 @@
  * ARC-1 is stateless HTTP, and a stopped debuggee holds a work process plus the request that ran it,
  * so the whole debugger loop completes inside ONE tool call (the same reasoning as "ADT locks never
  * cross an MCP round-trip"): arm breakpoints → long-poll the listener on the stateless client → run
- * the trigger → attach / read / step / release on one stateful session, opened on the debuggee's
- * application server (SAP attaches from no other) → always remove ARC-1's
- * breakpoints and the listener. The model gets a snapshot, never a remote control.
+ * the trigger → attach on one stateful session, opened on the debuggee's application server (SAP
+ * attaches from no other) → follow that ONE run from stop to stop (read, step, `stepContinue`) →
+ * release → always remove ARC-1's breakpoints and the listener. The model gets snapshots of one run,
+ * never a remote control.
  * See docs/research/2026-10-22-abap-debugger-one-shot-capture.md.
  */
 
@@ -23,6 +24,7 @@ import {
   type DebugListenResult,
   type DebugReleaseResult,
   type DebugStackFrame,
+  type DebugStepMethod,
   type DebugVariable,
   debuggerErrorSubType,
   debuggerErrorText,
@@ -46,7 +48,7 @@ import { checkDebug, checkOperation, OperationType } from '../adt/safety.js';
 import { getSessionUser, isPlausibleSapUser } from '../adt/session-user.js';
 import { extractMethod } from '../context/method-surgery.js';
 import { getCachedFeatures } from './feature-cache.js';
-import { detectLocalHandlerInclude, objectUrlForType } from './object-types.js';
+import { detectLocalHandlerInclude, normalizeObjectType, objectUrlForType } from './object-types.js';
 import { errorResult, type ToolResult, textResult, toolJson } from './shared.js';
 
 const DEFAULT_TIMEOUT_SECONDS = 60;
@@ -61,8 +63,14 @@ const MAX_COMPONENTS = 30;
 const MAX_TABLE_ROWS = 5;
 const MAX_VALUE_CHARS = 500;
 const MAX_STACK_FRAMES = 15;
-/** Attach + reads + steps once the debuggee is caught. */
+/** Stops recorded in one run (all breakpoints, all hits) and steps across them: what one result can
+ *  carry, and how long a suspended run is held. Hitting either ends the capture, not the program. */
+const MAX_STOPS = 10;
+const MAX_TOTAL_STEPS = 40;
+/** Attach + reads + steps + continues once the debuggee is caught. */
 const INSPECTION_BUDGET_MS = 120_000;
+/** A further `stepContinue` starts only with this much of the inspection budget left. */
+const CONTINUE_MARGIN_MS = 15_000;
 /** Own budget for the release, so an exhausted inspection can never leave a debuggee suspended. */
 const RELEASE_BUDGET_MS = 60_000;
 /** Opening the sessions ahead of the run (a few cheap requests). */
@@ -87,40 +95,80 @@ const activeCaptures = new Set<string>();
 class DebugInputError extends Error {}
 
 type DebugTrigger = 'unittest' | 'http' | 'none';
+type StepMode = 'over' | 'into' | 'out';
 
-interface DebugRequest {
+const STEP_METHODS: Record<StepMode, DebugStepMethod> = { over: 'stepOver', into: 'stepInto', out: 'stepReturn' };
+
+/** One line or method breakpoint. */
+interface BreakpointLocation {
   type: string;
   name: string;
   line?: number;
   method?: string;
   include?: string;
+  /** How many times it may stop the run (a loop). */
+  hits: number;
+}
+
+interface DebugRequest {
+  type: string;
+  name: string;
+  /** The top-level line first, then `breakpoints`: all armed for the same run. */
+  locations: BreakpointLocation[];
   exceptionClass?: string;
   trigger: DebugTrigger;
   triggerName?: string;
   url?: string;
   variables: string[];
+  /** Steps after each stop. */
   steps: number;
+  stepMode: StepMode;
   timeoutSeconds: number;
 }
 
+const trimmed = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.trim() ? value.trim() : undefined;
+
+/** A line/method breakpoint from the top-level `line` or a `breakpoints` item (type/name default to the top level). */
+function readLocation(raw: Record<string, unknown>, type: string, name: string): BreakpointLocation | undefined {
+  const line = typeof raw.line === 'number' ? raw.line : undefined;
+  const method = trimmed(raw.method);
+  if (line === undefined && method === undefined) return undefined;
+  const include = trimmed(raw.include)?.toLowerCase();
+  const ownType = trimmed(raw.type);
+  return {
+    type: ownType ? normalizeObjectType(ownType) : type,
+    name: (trimmed(raw.name) ?? name).toUpperCase(),
+    ...(line !== undefined ? { line } : {}),
+    ...(method ? { method } : {}),
+    ...(include ? { include } : {}),
+    hits: typeof raw.hits === 'number' ? raw.hits : 1,
+  };
+}
+
 function readRequest(args: Record<string, unknown>, type: string, name: string): DebugRequest {
-  const str = (key: string): string | undefined =>
-    typeof args[key] === 'string' && (args[key] as string).trim() ? (args[key] as string).trim() : undefined;
+  const str = (key: string): string | undefined => trimmed(args[key]);
   const variables = Array.isArray(args.variables)
     ? (args.variables as unknown[]).map((v) => String(v).trim().toUpperCase()).filter(Boolean)
     : [];
+  const top = name.trim().toUpperCase();
+  const extra = Array.isArray(args.breakpoints) ? (args.breakpoints as unknown[]) : [];
+  const locations = [args, ...extra].flatMap((raw) => {
+    const location =
+      raw && typeof raw === 'object' ? readLocation(raw as Record<string, unknown>, type, top) : undefined;
+    return location ? [location] : [];
+  });
   return {
     type,
-    name: name.trim().toUpperCase(),
-    ...(typeof args.line === 'number' ? { line: args.line } : {}),
-    ...(str('method') ? { method: str('method') } : {}),
-    ...(str('include') ? { include: str('include')?.toLowerCase() } : {}),
+    name: top,
+    locations,
     ...(str('exceptionClass') ? { exceptionClass: str('exceptionClass')?.toUpperCase() } : {}),
     trigger: (str('trigger') as DebugTrigger | undefined) ?? 'unittest',
     ...(str('triggerName') ? { triggerName: str('triggerName')?.toUpperCase() } : {}),
     ...(str('url') ? { url: str('url') } : {}),
     variables: [...new Set(variables)],
     steps: typeof args.steps === 'number' ? args.steps : 0,
+    stepMode: (str('stepMode') as StepMode | undefined) ?? 'over',
     timeoutSeconds: typeof args.timeoutSeconds === 'number' ? args.timeoutSeconds : DEFAULT_TIMEOUT_SECONDS,
   };
 }
@@ -159,6 +207,9 @@ interface LineTarget {
   label: string;
 }
 
+/** A resolved location and how many times it may stop the run. */
+type StopTarget = LineTarget & { hits: number };
+
 function lineRange(from: number, to: number): number[] {
   const lines: number[] = [];
   for (let line = Math.max(1, from); line <= Math.max(from, to); line++) lines.push(line);
@@ -175,65 +226,60 @@ async function resolveFunctionGroup(client: AdtClient, name: string): Promise<st
   return group;
 }
 
-async function resolveLineTarget(client: AdtClient, req: DebugRequest): Promise<LineTarget | undefined> {
-  if (req.line === undefined && req.method === undefined) return undefined;
-  const encoded = encodeURIComponent(req.name.toLowerCase());
-  if (req.type === 'CLAS') {
-    const include = req.include ?? (req.method ? detectLocalHandlerInclude(req.method) : undefined);
+async function resolveLineTarget(client: AdtClient, location: BreakpointLocation): Promise<LineTarget> {
+  const { type, name, method } = location;
+  const encoded = encodeURIComponent(name.toLowerCase());
+  if (type === 'CLAS') {
+    const include = location.include ?? (method ? detectLocalHandlerInclude(method) : undefined);
     if (include && !CLASS_INCLUDES.has(include)) {
       throw new DebugInputError(`include must be "implementations" or "testclasses" (got "${include}").`);
     }
     const base = `/sap/bc/adt/oo/classes/${encoded}`;
     const uri = include ? `${base}/includes/${include}` : `${base}/source/main`;
     const where = include ? `include "${include}"` : 'the main source';
-    if (req.method !== undefined) {
+    if (method !== undefined) {
       // Breakpoints apply to the ACTIVE code — resolve the method against it, never a draft.
       const source = include
-        ? (await client.getClassInclude(req.name, include, { version: 'active' })).source
-        : (await client.getClass(req.name, undefined, { version: 'active' })).source;
+        ? (await client.getClassInclude(name, include, { version: 'active' })).source
+        : (await client.getClass(name, undefined, { version: 'active' })).source;
       const release = getCachedFeatures()?.abapRelease;
-      const found = extractMethod(
-        source,
-        req.name,
-        req.method,
-        release ? mapSapReleaseToAbaplintVersion(release) : undefined,
-      );
+      const found = extractMethod(source, name, method, release ? mapSapReleaseToAbaplintVersion(release) : undefined);
       if (!found.success) {
         throw new DebugInputError(
-          `${found.error ?? `Method "${req.method}" not found.`} Searched ${where} of ${req.name}; pass include= for local classes.`,
+          `${found.error ?? `Method "${method}" not found.`} Searched ${where} of ${name}; give the breakpoint an include for local classes.`,
         );
       }
       return {
         uri,
         candidates: lineRange(found.startLine, Math.min(found.endLine, found.startLine + METHOD_PROBE - 1)),
-        label: `CLAS ${req.name} method ${req.method}`,
+        label: `CLAS ${name} method ${method}`,
       };
     }
-    const line = req.line as number;
+    const line = location.line as number;
     return {
       uri,
       candidates: lineRange(line, line + LINE_PROBE - 1),
-      label: `CLAS ${req.name} ${where} line ${line}`,
+      label: `CLAS ${name} ${where} line ${line}`,
     };
   }
-  if (req.method !== undefined) throw new DebugInputError('method is only supported for type="CLAS"; use line.');
-  const line = req.line as number;
-  if (req.type === 'PROG') {
+  if (method !== undefined) throw new DebugInputError('method is only supported for type="CLAS"; use line.');
+  const line = location.line as number;
+  if (type === 'PROG') {
     return {
       uri: `/sap/bc/adt/programs/programs/${encoded}/source/main`,
       candidates: lineRange(line, line + LINE_PROBE - 1),
-      label: `PROG ${req.name} line ${line}`,
+      label: `PROG ${name} line ${line}`,
     };
   }
-  if (req.type === 'FUNC') {
-    const group = await resolveFunctionGroup(client, req.name);
+  if (type === 'FUNC') {
+    const group = await resolveFunctionGroup(client, name);
     return {
       uri: `/sap/bc/adt/functions/groups/${encodeURIComponent(group.toLowerCase())}/fmodules/${encoded}/source/main`,
       candidates: lineRange(line, line + LINE_PROBE - 1),
-      label: `FUNC ${req.name} line ${line}`,
+      label: `FUNC ${name} line ${line}`,
     };
   }
-  throw new DebugInputError(`Line breakpoints support type CLAS, PROG or FUNC (got "${req.type || '(none)'}").`);
+  throw new DebugInputError(`Line breakpoints support type CLAS, PROG or FUNC (got "${type || '(none)'}").`);
 }
 
 // ─── Trigger ───────────────────────────────────────────────────────
@@ -328,53 +374,87 @@ function startTrigger(
 
 // ─── Breakpoints ───────────────────────────────────────────────────
 
+/** A breakpoint armed for the run, as each stop is matched against it. */
+interface ArmedBreakpoint {
+  /** Server id, shared by the external breakpoint and its debug-session copy. */
+  id: string;
+  label: string;
+  kind: 'line' | 'exception';
+  /** Line breakpoints: lower-cased source URI + the line SAP armed — how a stop is recognised on the stack. */
+  uri?: string;
+  line?: number;
+  /** Stops it may make before it is retired from the run. */
+  maxHits: number;
+  /** Its entry in the breakpoints report. */
+  reportIndex: number;
+}
+
 interface ArmedBreakpoints {
   /** Server ids of every breakpoint ARC-1 left armed — the cleanup list. */
   ids: string[];
+  armed: ArmedBreakpoint[];
   report: Array<Record<string, unknown>>;
 }
 
-const lineClientId = (line: number): string => `arc1-line-${line}`;
+/** `target`: the location's position in the request — two locations may probe the same line numbers. */
+const lineClientId = (target: number, line: number): string => `arc1-${target}-line-${line}`;
 const EXCEPTION_CLIENT_ID = 'arc1-exception';
 
 const isLineState = (state: DebugBreakpointState): boolean =>
   state.clientId !== EXCEPTION_CLIENT_ID && state.kind !== 'exception';
 
+/**
+ * SAP's answer for candidate `line` of target `index`: by the clientId it echoes, else by position —
+ * the line alone when only one target was probed (`soleTarget`), as before several were possible.
+ */
+function stateFor(
+  states: DebugBreakpointState[],
+  index: number,
+  target: LineTarget,
+  line: number,
+  soleTarget: boolean,
+): DebugBreakpointState | undefined {
+  return states.find(
+    (state) =>
+      isLineState(state) &&
+      (state.clientId === lineClientId(index, line) ||
+        (state.line === line && (soleTarget || (state.uri ?? '').toLowerCase() === target.uri.toLowerCase()))),
+  );
+}
+
 /** First candidate SAP armed, with the line SAP reports (it may move a breakpoint to the next statement). */
 function acceptedLine(
   target: LineTarget,
+  index: number,
   states: DebugBreakpointState[],
+  soleTarget: boolean,
 ): { requested: number; line: number } | undefined {
   for (const requested of target.candidates) {
-    const state = states.find(
-      (candidate) =>
-        candidate.id &&
-        isLineState(candidate) &&
-        (candidate.clientId === lineClientId(requested) || candidate.line === requested),
-    );
-    if (state) return { requested, line: state.line ?? requested };
+    const state = stateFor(states, index, target, requested, soleTarget);
+    if (state?.id) return { requested, line: state.line ?? requested };
   }
   return undefined;
 }
 
 /**
- * Arm the line breakpoint on the first candidate SAP accepts (one probe POST carrying every
- * candidate, then a second sync keeping only the accepted line) plus the optional exception one.
+ * Arm every line target on the first candidate SAP accepts (one probe POST carrying all candidates,
+ * then a second sync keeping one line per target — two targets on the same line arm it once) plus
+ * the optional exception breakpoint.
  */
 async function armBreakpoints(
   client: AdtClient,
   identity: DebugIdentity,
-  target: LineTarget | undefined,
+  targets: readonly StopTarget[],
   exceptionClass: string | undefined,
   armedIds: string[],
 ): Promise<ArmedBreakpoints> {
   const exceptionSpec: DebugBreakpointSpec[] = exceptionClass
     ? [{ kind: 'exception', clientId: EXCEPTION_CLIENT_ID, exceptionClass }]
     : [];
-  const lineSpec = (line: number): DebugBreakpointSpec => ({
+  const lineSpec = (index: number, line: number): DebugBreakpointSpec => ({
     kind: 'line',
-    clientId: lineClientId(line),
-    uri: target?.uri ?? '',
+    clientId: lineClientId(index, line),
+    uri: targets[index]?.uri ?? '',
     line,
   });
   const remember = (states: DebugBreakpointState[]): DebugBreakpointState[] => {
@@ -382,51 +462,84 @@ async function armBreakpoints(
     return states;
   };
 
-  let states = remember(
+  const probe = remember(
     await syncBreakpoints(client.http, client.safety, identity, [
-      ...(target ? target.candidates.map(lineSpec) : []),
+      ...targets.flatMap((target, index) => target.candidates.map((line) => lineSpec(index, line))),
       ...exceptionSpec,
     ]),
   );
+  const sole = targets.length === 1;
+  const accepted = targets.map((target, index) => acceptedLine(target, index, probe, sole));
+  const positionKey = (index: number, line: number): string => `${targets[index]?.uri.toLowerCase()}#${line}`;
+  /** Position → the first target that armed it. */
+  const owner = new Map<string, number>();
+  accepted.forEach((hit, index) => {
+    if (hit && !owner.has(positionKey(index, hit.line))) owner.set(positionKey(index, hit.line), index);
+  });
+  let states = probe;
+  // The probe may have armed several candidate lines per target — keep exactly one each.
+  if (probe.filter((state) => state.id && isLineState(state)).length > owner.size) {
+    states = remember(
+      await syncBreakpoints(client.http, client.safety, identity, [
+        ...[...owner.values()].map((index) => lineSpec(index, accepted[index]?.requested ?? 0)),
+        ...exceptionSpec,
+      ]),
+    );
+  }
+
+  const armed: ArmedBreakpoint[] = [];
   const report: Array<Record<string, unknown>> = [];
-  if (target) {
-    const accepted = acceptedLine(target, states);
-    if (accepted === undefined) {
-      const refusal = states.find((state) => state.error)?.error ?? 'SAP did not accept a breakpoint there';
+  targets.forEach((target, index) => {
+    const hit = accepted[index];
+    const first = hit ? owner.get(positionKey(index, hit.line)) : undefined;
+    const state = hit && first === index ? stateFor(states, index, target, hit.requested, sole) : undefined;
+    if (hit && first !== undefined && first !== index) {
+      report.push({ kind: 'line', location: target.label, status: 'duplicate', of: targets[first]?.label });
+    } else if (hit && state?.id) {
+      const line = state.line ?? hit.line;
+      armed.push({
+        id: state.id,
+        label: target.label,
+        kind: 'line',
+        uri: target.uri.toLowerCase(),
+        line,
+        maxHits: target.hits,
+        reportIndex: report.length,
+      });
+      report.push({ kind: 'line', location: target.label, status: 'set', line, uri: `${target.uri}#start=${line}` });
+    } else {
+      const refusal = target.candidates
+        .map((line) => stateFor(probe, index, target, line, sole)?.error)
+        .find((error) => error);
       report.push({
         kind: 'line',
         location: target.label,
         status: 'refused',
-        error: refusal,
+        error: state?.error ?? refusal ?? 'SAP did not accept a breakpoint there',
         triedLines: target.candidates,
       });
-    } else {
-      // The probe may have armed several candidate lines — keep exactly the first accepted one.
-      if (states.filter((state) => state.id && isLineState(state)).length > 1) {
-        states = remember(
-          await syncBreakpoints(client.http, client.safety, identity, [lineSpec(accepted.requested), ...exceptionSpec]),
-        );
-      }
-      report.push({
-        kind: 'line',
-        location: target.label,
-        status: 'set',
-        line: accepted.line,
-        uri: `${target.uri}#start=${accepted.line}`,
-      });
     }
-  }
+  });
   if (exceptionClass) {
     const state = states.find(
       (candidate) => candidate.clientId === EXCEPTION_CLIENT_ID || candidate.kind === 'exception',
     );
+    if (state?.id) {
+      armed.push({
+        id: state.id,
+        label: `exception ${exceptionClass}`,
+        kind: 'exception',
+        maxHits: 1,
+        reportIndex: report.length,
+      });
+    }
     report.push(
       state?.id
         ? { kind: 'exception', exceptionClass, status: 'set' }
         : { kind: 'exception', exceptionClass, status: 'refused', error: state?.error ?? 'not accepted by SAP' },
     );
   }
-  return { ids: [...armedIds], report };
+  return { ids: [...armedIds], armed, report };
 }
 
 async function disarm(client: AdtClient, identity: DebugIdentity, ids: readonly string[], warnings: string[]) {
@@ -628,28 +741,72 @@ function describeFrame(frame: DebugStackFrame): Record<string, unknown> {
   };
 }
 
+/** The frames worth showing: customer code (system frames counted), at most MAX_STACK_FRAMES. */
+function describeStack(stack: DebugStackFrame[]): Record<string, unknown> {
+  const visible = stack.filter((frame) => !frame.systemProgram);
+  return {
+    ...(stack.length > 0 ? { stack: visible.slice(0, MAX_STACK_FRAMES).map(describeFrame) } : {}),
+    ...(stack.length > visible.length ? { hiddenSystemFrames: stack.length - visible.length } : {}),
+  };
+}
+
+/** `/sap/bc/adt/…/source/main#start=9,4` → lower-cased path + line. */
+function sourcePosition(uri: string): { uri: string; line: number } | undefined {
+  const [path, fragment] = uri.split('#', 2);
+  const line = Number(/start=(\d+)/.exec(fragment ?? '')?.[1]);
+  return path && Number.isInteger(line) ? { uri: path.toLowerCase(), line } : undefined;
+}
+
+/**
+ * The breakpoint a stop belongs to: the one SAP names, else the line breakpoint at the top frame's
+ * position, else the only one armed. Undefined = unknown (a `BREAK-POINT` statement, or SAP said nothing usable).
+ */
+function breakpointAt(
+  armed: readonly ArmedBreakpoint[],
+  reached: readonly string[],
+  top: DebugStackFrame | undefined,
+): ArmedBreakpoint | undefined {
+  for (const id of reached) {
+    const named = armed.find((bp) => bp.id === id);
+    if (named) return named;
+  }
+  const position = top?.uri ? sourcePosition(top.uri) : undefined;
+  const placed = position
+    ? armed.find((bp) => bp.kind === 'line' && bp.uri === position.uri && bp.line === position.line)
+    : undefined;
+  return placed ?? (armed.length === 1 ? armed[0] : undefined);
+}
+
 interface Inspection {
   attached: boolean;
-  stack?: DebugStackFrame[];
-  variables?: CapturedVariable[];
-  steps?: Array<Record<string, unknown>>;
+  stops: Array<Record<string, unknown>>;
+  /** Stops per armed breakpoint id. */
+  hits: Map<string, number>;
   release?: DebugReleaseResult;
   error?: string;
 }
 
-/** `watch`: the requested names that were readable at the stop — an unknown one would fail every step. */
+interface StepRun {
+  steps: Array<Record<string, unknown>>;
+  /** The program finished during the steps. */
+  ended: boolean;
+  steppingPossible: boolean;
+}
+
+/** `count` steps of `stepMode`. `watch`: the requested names readable at the stop — an unknown one would fail every step. */
 async function runSteps(
   session: DebuggerSession,
-  req: DebugRequest,
+  stepMode: StepMode,
+  count: number,
   watch: readonly string[],
   warnings: string[],
-): Promise<Array<Record<string, unknown>>> {
+): Promise<StepRun> {
   const steps: Array<Record<string, unknown>> = [];
-  for (let index = 1; index <= req.steps; index++) {
-    const outcome = await session.step('stepOver');
+  for (let index = 1; index <= count; index++) {
+    const outcome = await session.step(STEP_METHODS[stepMode]);
     if (outcome.status === 'ended') {
       steps.push({ step: index, ended: true });
-      break;
+      return { steps, ended: true, steppingPossible: false };
     }
     const [top] = await session.stack();
     const entry: Record<string, unknown> = { step: index, ...(top ? describeFrame(top) : {}) };
@@ -675,10 +832,102 @@ async function runSteps(
     steps.push(entry);
     if (!outcome.steppingPossible) {
       warnings.push(`SAP reports stepping is no longer possible after step ${index}.`);
-      break;
+      return { steps, ended: false, steppingPossible: false };
     }
   }
-  return steps;
+  return { steps, ended: false, steppingPossible: true };
+}
+
+/**
+ * Follow ONE run from stop to stop: record each stop (position, the call stack on a breakpoint's
+ * first stop, variables, steps), retire a breakpoint from the run once it stopped it `maxHits` times,
+ * then `stepContinue` to the next stop. Ends when no armed breakpoint is left, the program ends, or a
+ * cap is reached — the release then lets the rest of the run go on without stopping.
+ */
+async function collectStops(
+  session: DebuggerSession,
+  req: DebugRequest,
+  armed: readonly ArmedBreakpoint[],
+  first: { reachedBreakpoints: string[]; steppingPossible: boolean; single: boolean },
+  inspection: Inspection,
+  deadline: number,
+  warnings: string[],
+): Promise<void> {
+  const remaining = new Set(armed.map((bp) => bp.id));
+  const stackShown = new Set<string>();
+  let { reachedBreakpoints, steppingPossible } = first;
+  let stepsLeft = MAX_TOTAL_STEPS;
+  for (;;) {
+    const stack = await session.stack();
+    const at = breakpointAt(armed, reachedBreakpoints, stack[0]);
+    const hits = at ? (inspection.hits.get(at.id) ?? 0) + 1 : 0;
+    if (at) inspection.hits.set(at.id, hits);
+    const stop: Record<string, unknown> = {
+      stop: inspection.stops.length + 1,
+      ...(at ? { at: at.label } : {}),
+      ...(at && at.maxHits > 1 ? { hit: hits } : {}),
+      ...(stack[0] ? { stoppedAt: describeFrame(stack[0]) } : {}),
+      // The call stack once per breakpoint: a loop's later stops would only repeat it.
+      ...(!at || !stackShown.has(at.id) ? describeStack(stack) : {}),
+    };
+    if (at) stackShown.add(at.id);
+    inspection.stops.push(stop);
+    const variables =
+      req.variables.length > 0
+        ? await readNamedVariables(session, req.variables)
+        : await readFrameVariables(session, warnings);
+    stop.variables = variables;
+    if (req.steps > 0) {
+      if (!steppingPossible) {
+        warnings.push(`SAP reports stepping is not possible at stop ${stop.stop}; its steps were skipped.`);
+      } else if (stepsLeft <= 0) {
+        warnings.push(`A capture records at most ${MAX_TOTAL_STEPS} steps; stop ${stop.stop} has none.`);
+      } else {
+        const watch = variables
+          .filter((variable) => req.variables.includes(variable.name) && !variable.error)
+          .map((variable) => variable.name);
+        const run = await runSteps(session, req.stepMode, Math.min(req.steps, stepsLeft), watch, warnings);
+        stepsLeft -= run.steps.length;
+        stop.steps = run.steps;
+        if (run.ended) {
+          inspection.release = { released: true, via: 'continue' };
+          return;
+        }
+        if (!run.steppingPossible) return;
+      }
+    }
+    if (first.single) return;
+    if (at && hits >= at.maxHits) {
+      remaining.delete(at.id);
+      if (remaining.size > 0) {
+        try {
+          await session.removeBreakpoint(at.id);
+        } catch (err) {
+          warnings.push(
+            `Could not keep ${at.label} from stopping the run again (${debuggerErrorText(err)}); no further stops were recorded.`,
+          );
+          return;
+        }
+      }
+    }
+    if (remaining.size === 0) return;
+    if (inspection.stops.length >= MAX_STOPS) {
+      warnings.push(`A capture records at most ${MAX_STOPS} stops; the rest of the run went on without stopping.`);
+      return;
+    }
+    if (deadline - Date.now() < CONTINUE_MARGIN_MS) {
+      warnings.push(
+        `The ${INSPECTION_BUDGET_MS / 1000}s inspection budget ran out after ${inspection.stops.length} stop(s); the rest of the run went on without stopping.`,
+      );
+      return;
+    }
+    const next = await session.step('stepContinue');
+    if (next.status === 'ended') {
+      inspection.release = { released: true, via: 'continue' };
+      return;
+    }
+    ({ reachedBreakpoints, steppingPossible } = next);
+  }
 }
 
 /**
@@ -695,15 +944,16 @@ async function inspect(
   identity: DebugIdentity,
   debuggee: Debuggee,
   req: DebugRequest,
-  breakpointIds: readonly string[],
+  armed: ArmedBreakpoints,
   onAttached: () => Promise<void>,
   warnings: string[],
   ready: AdtHttpClient | undefined,
 ): Promise<Inspection> {
+  const inspection: Inspection = { attached: false, stops: [], hits: new Map() };
   if (debuggee.attachImpossible) {
     if (ready) await endSession(ready, client.safety, { deadline: Date.now() + RELEASE_BUDGET_MS });
     return {
-      attached: false,
+      ...inspection,
       error:
         'SAP reports this debuggee cannot be attached (IS_ATTACH_IMPOSSIBLE), e.g. it runs on another application server.',
     };
@@ -715,30 +965,30 @@ async function inspect(
       ? { http: ready, instance: debuggee.instance, probes: 0 }
       : await openSessionOnServer(client.http, client.safety, debuggee.instance, { deadline });
   } catch (err) {
-    return { attached: false, error: `Could not open a debugger session: ${debuggerErrorText(err)}` };
+    return { ...inspection, error: `Could not open a debugger session: ${debuggerErrorText(err)}` };
   }
   const sessionHttp = pinned.http;
   const session = new DebuggerSession(sessionHttp, client.safety, identity, { deadline });
   let attachState: 'none' | 'attached' | 'unknown' = 'unknown';
-  const inspection: Inspection = { attached: false };
   try {
     const attach = await session.attach(debuggee.id);
     attachState = 'attached';
     inspection.attached = true;
     if (attach.postMortem) warnings.push('SAP attached a post-mortem (short dump) session — inspection only.');
     await onAttached();
-    inspection.stack = await session.stack();
-    inspection.variables =
-      req.variables.length > 0
-        ? await readNamedVariables(session, req.variables)
-        : await readFrameVariables(session, warnings);
-    if (req.steps > 0) {
-      const watch = (inspection.variables ?? [])
-        .filter((variable) => req.variables.includes(variable.name) && !variable.error)
-        .map((variable) => variable.name);
-      if (attach.steppingPossible) inspection.steps = await runSteps(session, req, watch, warnings);
-      else warnings.push('SAP reports stepping is not possible for this debuggee; steps were skipped.');
-    }
+    await collectStops(
+      session,
+      req,
+      armed.armed,
+      {
+        reachedBreakpoints: attach.reachedBreakpoints.map((bp) => bp.id).filter(Boolean),
+        steppingPossible: attach.steppingPossible,
+        single: attach.postMortem,
+      },
+      inspection,
+      deadline,
+      warnings,
+    );
   } catch (err) {
     if (attachState === 'unknown' && attachDefinitelyFailed(err)) attachState = 'none';
     const subType = debuggerErrorSubType(err);
@@ -753,11 +1003,12 @@ async function inspect(
       inspection.error += ` — SAP attaches only from the debuggee's application server (${debuggee.instance}), and none of ${pinned.probes} new sessions landed there (the last on ${pinned.instance}): while a debuggee waits, SAP's load balancer sends new sessions elsewhere. Retry the capture.`;
     }
   } finally {
-    if (attachState !== 'none') {
+    // A run that already ended needs no release.
+    if (attachState !== 'none' && !inspection.release) {
       const releaser = new DebuggerSession(sessionHttp, client.safety, identity, {
         deadline: Date.now() + RELEASE_BUDGET_MS,
       });
-      inspection.release = await releaser.release(breakpointIds);
+      inspection.release = await releaser.release(armed.ids);
     }
     // A debuggee that could not be released keeps its debugger session; any other ends here.
     if (attachState === 'none' || inspection.release?.released) {
@@ -811,9 +1062,14 @@ async function runCapture(client: AdtClient, req: DebugRequest, user: string): P
   const identity = createDebugIdentity(user);
   const warnings: string[] = [];
   // Everything that can fail on input is resolved BEFORE any debugger state exists on SAP.
-  const target = await resolveLineTarget(client, req);
-  if (!target && !req.exceptionClass) {
-    throw new DebugInputError('Give a breakpoint: line or method (with type + name), and/or exceptionClass.');
+  const targets: StopTarget[] = [];
+  for (const location of req.locations) {
+    targets.push({ ...(await resolveLineTarget(client, location)), hits: location.hits });
+  }
+  if (targets.length === 0 && !req.exceptionClass) {
+    throw new DebugInputError(
+      'Give a breakpoint: breakpoints (line or CLAS method each), line (with type + name), and/or exceptionClass.',
+    );
   }
   const plan = await planTrigger(client, req);
 
@@ -864,7 +1120,7 @@ async function runCapture(client: AdtClient, req: DebugRequest, user: string): P
   };
 
   try {
-    const armed = await armBreakpoints(client, identity, target, req.exceptionClass, armedIds);
+    const armed = await armBreakpoints(client, identity, targets, req.exceptionClass, armedIds);
     if (armed.ids.length === 0) {
       return errorResult(
         toolJson({ hit: false, error: 'SAP refused every breakpoint — nothing was armed.', breakpoints: armed.report }),
@@ -931,7 +1187,7 @@ async function runCapture(client: AdtClient, req: DebugRequest, user: string): P
 
     const { debuggee } = outcome;
     attachedFrom = debuggee.instance ? ahead.byServer.get(debuggee.instance.toUpperCase()) : undefined;
-    const inspection = await inspect(client, identity, debuggee, req, armed.ids, clearExternal, warnings, attachedFrom);
+    const inspection = await inspect(client, identity, debuggee, req, armed, clearExternal, warnings, attachedFrom);
     await teardown();
     const triggerOutcome = await settleTrigger();
     if (inspection.release && !inspection.release.released) {
@@ -939,12 +1195,19 @@ async function runCapture(client: AdtClient, req: DebugRequest, user: string): P
         `The debuggee could not be released (${inspection.release.detail ?? 'unknown'}); it stays suspended until SAP's debugger timeout ends its session.`,
       );
     }
-    const stack = inspection.stack ?? [];
-    const visible = stack.filter((frame) => !frame.systemProgram);
+    // How often each breakpoint stopped the run (0 = the run never reached it while ARC-1 followed it).
+    const breakpoints = armed.report.map((entry) => ({ ...entry }));
+    if (inspection.attached) {
+      for (const bp of armed.armed) {
+        const entry = breakpoints[bp.reportIndex];
+        if (entry) entry.hits = inspection.hits.get(bp.id) ?? 0;
+      }
+    }
     return textResult(
       toolJson({
         hit: true,
         ...base,
+        breakpoints,
         debuggee: {
           user: debuggee.user,
           program: debuggee.program,
@@ -954,15 +1217,12 @@ async function runCapture(client: AdtClient, req: DebugRequest, user: string): P
           ...(debuggee.instance ? { server: debuggee.instance } : {}),
         },
         attached: inspection.attached,
-        ...(stack[0] ? { stoppedAt: describeFrame(stack[0]) } : {}),
-        ...(stack.length > 0 ? { stack: visible.slice(0, MAX_STACK_FRAMES).map(describeFrame) } : {}),
-        ...(stack.length > visible.length ? { hiddenSystemFrames: stack.length - visible.length } : {}),
-        ...(inspection.variables ? { variables: inspection.variables } : {}),
-        ...(inspection.steps ? { steps: inspection.steps } : {}),
+        ...(inspection.stops.length > 0 ? { stops: inspection.stops } : {}),
         ...(inspection.release ? { release: inspection.release } : {}),
         ...(inspection.error ? { error: inspection.error } : {}),
         trigger: { ...base.trigger, ...(triggerOutcome ?? {}) },
-        ...(warnings.length > 0 ? { warnings } : {}),
+        // One warning per kind: every stop of a big frame would repeat the same one.
+        ...(warnings.length > 0 ? { warnings: [...new Set(warnings)] } : {}),
       }),
     );
   } finally {
