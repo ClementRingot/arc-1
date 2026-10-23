@@ -325,6 +325,11 @@ first minutes after the publish (which itself outlasted ARC-1's request timeout)
 403 "blocked by UCON"; such a capture reports `trigger failed` with its own hint. Still owed on BTP: a
 run long enough to probe the poll timeout under PP (11).
 
+**Only the BTP ABAP Environment has been tested live.** Every other landscape is still owed before the
+action is relied on there: SAP S/4HANA on-premise (items 1–10), SAP S/4HANA Cloud Private Edition (the
+same checks on its release; it is typically reached through the Cloud Connector, hence also 11) and
+SAP S/4HANA Cloud Public Edition (12).
+
 1. 758 + 816: `trigger=unittest` on a class with a line breakpoint → `hit:true`, stack top = the line,
    locals present; verify the `@ROOT` scope names (`CHILD_NAME`) and that the walk returns values.
 2. 7.50: same; confirm the stack dispatcher fallback and observe whether the attach survives without
@@ -350,3 +355,6 @@ run long enough to probe the poll timeout under PP (11).
     unknown) and record a real body in `tests/fixtures/`.
 11. PP through the Cloud Connector: confirm the long poll (`timeoutSeconds` + 30 s) survives the
     connectivity proxy and Cloud Connector timeouts, or lower the maximum `timeoutSeconds` there.
+12. SAP S/4HANA Cloud Public Edition: confirm that a developer-extensibility user can arm an external
+    breakpoint and attach on the development tenant, that the unit-test trigger runs there, and that
+    `systeminformation` names the mapped SAP user under its SAML-based principal propagation.
