@@ -298,9 +298,11 @@ endpoint" after probing `/sap/bc/adt/core/systeminformation` (no `/http/`), `sec
 - **Dynamic logpoints** (`/sap/bc/adt/dlp/logpoints`, A `logpoints.js`): non-blocking and attractive
   for production, but asynchronous (log, then read later) and a different object model — a good
   follow-up, not "the debugger".
-- **Classrun trigger** (`IF_OO_ADT_CLASSRUN`): executes arbitrary code; ARC-1 gates that behind
-  `SAP_ALLOW_PLUGIN_EXECUTE` + writes. Unit tests (harmless risk level) and read-only OData GETs are
-  the v1 triggers.
+- **Classrun trigger** (`IF_OO_ADT_CLASSRUN`): executes arbitrary code, which
+  [ADR-0009](../adr/0009-abap-execution-and-rfc-belong-in-extensions.md) keeps out of core (extensions
+  only, `ctx.run.classRun` behind `SAP_ALLOW_PLUGIN_EXECUTE` + writes). The capture stays inside that
+  boundary: it uses SAP's native debugger resources and no ABAP helper, and its triggers are ABAP Unit
+  on tests declared harmless (a native development operation the ADR keeps) and a read-only OData GET.
 
 ## 9. Live verification still owed (run before turning it on for real users)
 
