@@ -277,3 +277,70 @@ describe('production OAuth redirect flow', () => {
     expect(wrong.headers.location).toBeUndefined();
   });
 });
+
+describe('deployment-restricted OAuth clients', () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const restricted: Partial<ServerConfig> = {
+    oauthDcrRedirectUriPatterns: [
+      'https://vscode.dev/redirect',
+      'http://127.0.0.1:*/**',
+      'https://port3000-workspaces-ws-x.eu10.applicationstudio.cloud.sap/callback',
+    ],
+  };
+  const register = (app: express.Express, redirectUri: string) =>
+    request(app)
+      .post('/register')
+      .send({ client_name: 'Visual Studio Code', redirect_uris: [redirectUri], token_endpoint_auth_method: 'none' });
+
+  it('rejects a registration outside the allowlist before any authorization', async () => {
+    const app = await boot('https://arc1.example', true, restricted);
+    const rejected = await register(app, 'https://attacker.example/cb');
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.error).toBe('invalid_client_metadata');
+  });
+
+  it.each([
+    'http://127.0.0.1:33418/',
+    'https://vscode.dev/redirect',
+    'https://port3000-workspaces-ws-x.eu10.applicationstudio.cloud.sap/callback',
+  ])('requires approval before forwarding an allowlisted client: %s', async (redirectUri) => {
+    const app = await boot('https://arc1.example', true, restricted);
+    const registered = await register(app, redirectUri);
+    expect(registered.status).toBe(201);
+    const page = await request(app).get('/authorize').query(authorization(redirectUri, registered.body.client_id));
+    expect(page.status).toBe(200);
+    expect(page.headers.location).toBeUndefined();
+    expect(cookies(page).some((cookie) => cookie.includes('mcp-oauth-state-'))).toBe(false);
+    const approved = await approve(app, page);
+    expect(new URL(approved.headers.location).origin).toBe(CREDENTIALS.url);
+    expect(cookies(approved).some((cookie) => cookie.includes('mcp-oauth-state-'))).toBe(true);
+  });
+
+  it('denies every dynamic redirect under an explicitly empty policy', async () => {
+    const app = await boot('https://arc1.example', true, { oauthDcrRedirectUriPatterns: [] });
+    const rejected = await register(app, 'https://vscode.dev/redirect');
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.error).toBe('invalid_client_metadata');
+  });
+
+  it('applies a narrowed policy to previously registered clients across instances', async () => {
+    const original = await boot();
+    const registered = await request(original)
+      .post('/register')
+      .send({
+        redirect_uris: ['https://vscode.dev/redirect', 'https://retired-client.example/callback'],
+        token_endpoint_auth_method: 'none',
+      });
+    expect(registered.status).toBe(201);
+    const narrowed = await boot('https://arc1.example', true, restricted);
+    const allowed = await request(narrowed)
+      .get('/authorize')
+      .query(authorization('https://vscode.dev/redirect', registered.body.client_id));
+    await approve(narrowed, allowed);
+    const retired = await request(narrowed)
+      .get('/authorize')
+      .query(authorization('https://retired-client.example/callback', registered.body.client_id));
+    expect(retired.status).toBe(400);
+    expect(retired.headers.location).toBeUndefined();
+  });
+});

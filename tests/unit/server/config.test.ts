@@ -1060,6 +1060,38 @@ describe('parseArgs', () => {
     expect(parseArgs(['--oauth-dcr-enabled', 'false']).oauthDcrEnabled).toBe(false);
   });
 
+  it('parses the OAuth redirect allowlist and records its source', () => {
+    expect(parseArgs([]).oauthDcrRedirectUriPatterns).toBeUndefined();
+    vi.stubEnv(
+      'ARC1_OAUTH_DCR_REDIRECT_URI_PATTERNS',
+      'https://vscode.dev/redirect, http://127.0.0.1:*/**\nhttps://workspace.example/callback',
+    );
+    const { config, sources } = resolveConfig([]);
+    expect(config.oauthDcrRedirectUriPatterns).toEqual([
+      'https://vscode.dev/redirect',
+      'http://127.0.0.1:*/**',
+      'https://workspace.example/callback',
+    ]);
+    expect(sources.oauthDcrRedirectUriPatterns).toEqual({ env: 'ARC1_OAUTH_DCR_REDIRECT_URI_PATTERNS' });
+    const override = resolveConfig(['--oauth-dcr-redirect-uri-patterns=https://client.example/cb']);
+    expect(override.config.oauthDcrRedirectUriPatterns).toEqual(['https://client.example/cb']);
+    expect(override.sources.oauthDcrRedirectUriPatterns).toEqual({ flag: '--oauth-dcr-redirect-uri-patterns' });
+  });
+
+  it.each(['', '  ', ', ,'])('treats an explicitly empty DCR policy as deny-all: %j', (value) => {
+    vi.stubEnv('ARC1_OAUTH_DCR_REDIRECT_URI_PATTERNS', value);
+    expect(parseArgs([]).oauthDcrRedirectUriPatterns).toEqual([]);
+    vi.stubEnv('ARC1_OAUTH_DCR_REDIRECT_URI_PATTERNS', 'https://client.example/cb');
+    expect(parseArgs(['--oauth-dcr-redirect-uri-patterns', value]).oauthDcrRedirectUriPatterns).toEqual([]);
+  });
+
+  it('keeps an empty equals-style DCR flag authoritative over the environment', () => {
+    vi.stubEnv('ARC1_OAUTH_DCR_REDIRECT_URI_PATTERNS', 'https://client.example/cb');
+    const { config, sources } = resolveConfig(['--oauth-dcr-redirect-uri-patterns=']);
+    expect(config.oauthDcrRedirectUriPatterns).toEqual([]);
+    expect(sources.oauthDcrRedirectUriPatterns).toEqual({ flag: '--oauth-dcr-redirect-uri-patterns' });
+  });
+
   // --- oauthDcrTtlSeconds ---
 
   it('defaults oauthDcrTtlSeconds to 0 (never expire)', () => {

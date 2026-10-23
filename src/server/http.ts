@@ -489,6 +489,7 @@ export async function startHttpServer(
       dcrKdfLabel: 'arc1-dcr/v1',
       stateKdfLabel: 'arc1-oauth-state/v1',
       dcrEnabled: config.oauthDcrEnabled,
+      dcrRedirectUriPatterns: config.oauthDcrRedirectUriPatterns,
       dcrTtlSeconds: config.oauthDcrTtlSeconds,
       dcrSigningSecret: config.dcrSigningSecret,
       callbackUrl: oauthCallbackUrl,

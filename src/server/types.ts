@@ -121,6 +121,11 @@ export interface ServerConfig {
   oauthDcrTtlSeconds: number;
   /** Allow new dynamic OAuth client registrations. Existing clients still require consent. */
   oauthDcrEnabled: boolean;
+  /**
+   * Optional allowlist (redirect-URI globs) for dynamic client registration. Registration rejects
+   * other return addresses, and existing client_ids lose them. Unset keeps the library default.
+   */
+  oauthDcrRedirectUriPatterns?: string[];
 
   /**
    * Optional dedicated secret for HMAC-signing DCR `client_id`s. When set,
