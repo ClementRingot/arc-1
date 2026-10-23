@@ -10,12 +10,16 @@ import {
   buildBreakpointsXml,
   buildChildVariablesXml,
   buildVariablesXml,
+  contextServer,
   createDebugIdentity,
   DebuggerSession,
   debuggerErrorSubType,
   deleteBreakpoint,
+  endSession,
   findListenerConflict,
   listenForDebuggee,
+  openSessionOnServer,
+  openSessionsAhead,
   parseAttachResponse,
   parseBreakpointsResponse,
   parseChildVariablesResponse,
@@ -49,6 +53,10 @@ function debuggerException(subType: string, message = 'Debugger message', extra 
 }
 
 const DEBUGGEE_XML = `<?xml version="1.0" encoding="utf-8"?><asx:abap xmlns:asx="http://www.sap.com/abapxml" version="1.0"><asx:values><DATA><STPDA_DEBUGGEE><CLIENT>001</CLIENT><DEBUGGEE_ID>DBGEE_42</DEBUGGEE_ID><TERMINAL_ID>%_USER</TERMINAL_ID><IDE_ID>DEVELOPER</IDE_ID><DEBUGGEE_USER>DEVELOPER</DEBUGGEE_USER><PRG_CURR>ZCL_ORDER=====================CP</PRG_CURR><INCL_CURR>ZCL_ORDER=====================CM002</INCL_CURR><LINE_CURR>12</LINE_CURR><DBGEE_KIND>DEBUGGEE</DBGEE_KIND><IS_ATTACH_IMPOSSIBLE>false</IS_ATTACH_IMPOSSIBLE><URI>/sap/bc/adt/oo/classes/zcl_order/source/main#start=42</URI><TYPE>CLAS/OC</TYPE><NAME>ZCL_ORDER</NAME></STPDA_DEBUGGEE></DATA></asx:values></asx:abap>`;
+
+// Live shape (BTP ABAP Environment, 2026-10-23; user and pod names replaced): the debuggee names the
+// application server it waits on, and that it is NOT the listener's.
+const BTP_DEBUGGEE_XML = `<?xml version="1.0" encoding="utf-8"?><asx:abap version="1.0" xmlns:asx="http://www.sap.com/abapxml"><asx:values><DATA><STPDA_DEBUGGEE><CLIENT>100</CLIENT><DEBUGGEE_ID>26F50987F8801FD1B3D64A7DABE34570</DEBUGGEE_ID><TERMINAL_ID/><IDE_ID/><DEBUGGEE_USER>CB9900000001</DEBUGGEE_USER><PRG_CURR>ZCL_ARC1_DBG_DEMO=============CP</PRG_CURR><INCL_CURR>ZCL_ARC1_DBG_DEMO=============CM001</INCL_CURR><LINE_CURR>4</LINE_CURR><RFCDEST>appserver-rpsxx</RFCDEST><APPLSERVER/><SYSID>TRL</SYSID><SYSNR>0</SYSNR><DBGKEY/><TSTMP>0</TSTMP><DBGEE_KIND>DEBUGGEE</DBGEE_KIND><DUMPID/><DUMPDATE>0000-00-00</DUMPDATE><DUMPTIME>00:00:00</DUMPTIME><DUMPHOST/><DUMPMODNO>0</DUMPMODNO><LISTENER_CTX_ID/><IS_ATTACH_IMPOSSIBLE>false</IS_ATTACH_IMPOSSIBLE><APPSERVER>10-0-0-1.pod.cluster.local</APPSERVER><IS_SAME_SERVER>false</IS_SAME_SERVER><CAN_ADT_CROSS_SERVER>true</CAN_ADT_CROSS_SERVER><INSTANCE_NAME>appserver-rpsxx</INSTANCE_NAME><HOST>10-0-0-1</HOST><DUMP_ID/><DUMP_DATE>0000-00-00</DUMP_DATE><DUMP_TIME>00:00:00</DUMP_TIME><DUMP_HOST/><DUMP_UNAME/><DUMP_MODNO>0</DUMP_MODNO><DUMP_CLIENT/><DUMP_URI/><URI>/sap/bc/adt/oo/classes/zcl_arc1_dbg_demo/source/main#start=18,0</URI><TYPE>CLAS/OC</TYPE><NAME>ZCL_ARC1_DBG_DEMO</NAME><PARENT_URI/><PACKAGE_NAME/><DESCRIPTION/></STPDA_DEBUGGEE></DATA></asx:values></asx:abap>`;
 
 const STACK_XML = `<?xml version="1.0" encoding="utf-8"?><dbg:stack xmlns:dbg="http://www.sap.com/adt/debugger" isRfc="false" isSameSystem="true" serverName="vhcala4hci"><stackEntry stackPosition="3" stackType="ABAP" stackUri="/sap/bc/adt/debugger/stack/type/ABAP/position/3" programName="ZCL_ORDER=====================CP" includeName="ZCL_ORDER=====================CM002" line="12" eventType="METHOD" eventName="GET_TOTAL" sourceType="ABAP" systemProgram="false" isVit="false" uri="/sap/bc/adt/oo/classes/zcl_order/source/main#start=42,4"/><stackEntry stackPosition="2" stackType="ABAP" programName="ZCL_ORDER=====================CP" includeName="ZCL_ORDER=====================CCAU" line="20" eventType="METHOD" eventName="TOTAL_IS_SUM" systemProgram="false" uri="/sap/bc/adt/oo/classes/zcl_order/includes/testclasses#start=20,4"/><stackEntry stackPosition="1" stackType="ABAP" programName="SAPLSAUNIT_TEST_RUNNER" includeName="LSAUNIT_TEST_RUNNERU01" line="7" eventType="FUNCTION" eventName="SAUNIT_RUN" systemProgram="true"/></dbg:stack>`;
 
@@ -142,6 +150,9 @@ describe('safety gate (checkDebug)', () => {
       await expect(listenForDebuggee(http, safety, IDENTITY, 10)).rejects.toBeInstanceOf(AdtSafetyError);
       await expect(stopListener(http, safety, 'DEVELOPER')).rejects.toBeInstanceOf(AdtSafetyError);
       await expect(new DebuggerSession(http, safety, IDENTITY).attach('X')).rejects.toBeInstanceOf(AdtSafetyError);
+      await expect(openSessionOnServer(http, safety, 'appserver-a')).rejects.toBeInstanceOf(AdtSafetyError);
+      await expect(openSessionsAhead(http, safety)).rejects.toBeInstanceOf(AdtSafetyError);
+      await expect(endSession(http, safety)).rejects.toBeInstanceOf(AdtSafetyError);
       expect(http.post).not.toHaveBeenCalled();
       expect(http.delete).not.toHaveBeenCalled();
     });
@@ -167,6 +178,17 @@ describe('listener', () => {
     ).toBe(true);
     expect(parseDebuggee('')).toBeUndefined();
     expect(parseDebuggee(DEBUGGEE_XML.replace('DBGEE_42', ''))).toBeUndefined();
+  });
+
+  it('reads the application server the debuggee waits on (BTP ABAP, live shape)', () => {
+    expect(parseDebuggee(BTP_DEBUGGEE_XML)).toMatchObject({
+      id: '26F50987F8801FD1B3D64A7DABE34570',
+      user: 'CB9900000001',
+      line: 4,
+      instance: 'appserver-rpsxx',
+      attachImpossible: false,
+    });
+    expect(parseDebuggee(DEBUGGEE_XML)?.instance).toBeUndefined();
   });
 
   it('long-polls with the identity, conflict flags and a server timeout, granting HTTP 30s of grace', async () => {
@@ -240,6 +262,143 @@ describe('listener', () => {
       { Accept: '*/*' },
       undefined,
     );
+  });
+});
+
+describe("the debuggee's application server", () => {
+  const contextOn = (server: string) => `SID%3aANON%3a${server}%3aKX9qZ-NEW`;
+
+  /** New stateful sessions land on `landings` in turn; a session learns its context from its first answer. */
+  function balancedSap(landings: Array<string | undefined>, probe?: ReturnType<typeof vi.fn>) {
+    type FakeSession = {
+      get: ReturnType<typeof vi.fn>;
+      endStatefulSession: ReturnType<typeof vi.fn>;
+      sessionContextId?: string;
+    };
+    const sessions: FakeSession[] = [];
+    const http = {
+      openStatefulSession: vi.fn(() => {
+        const landing = landings[sessions.length % landings.length];
+        const session: FakeSession = { get: vi.fn(), endStatefulSession: vi.fn().mockResolvedValue(true) };
+        session.get =
+          probe ??
+          vi.fn(async () => {
+            session.sessionContextId ??= landing && contextOn(landing);
+            return ok('{}');
+          });
+        sessions.push(session);
+        return session;
+      }),
+    } as unknown as AdtHttpClient;
+    const ended = () => sessions.filter((session) => session.endStatefulSession.mock.calls.length > 0);
+    return { http, sessions, ended };
+  }
+
+  it('reads the server out of a sap-contextid, and nothing out of other shapes', () => {
+    expect(contextServer(contextOn('appserver-t4w2x'))).toBe('appserver-t4w2x');
+    expect(contextServer('SID%3aANON%3avhcala4hci_A4H_00%3aABC-NEW')).toBe('vhcala4hci_A4H_00');
+    expect(contextServer(undefined)).toBeUndefined();
+    expect(contextServer('opaque-context-42')).toBeUndefined();
+    expect(contextServer('%E0%A4%A')).toBeUndefined();
+  });
+
+  it("opens sessions until one lands on the debuggee's server and ends the others", async () => {
+    const { http, sessions, ended } = balancedSap(['appserver-t4w2x', 'appserver-t4w2x', 'appserver-rpsxx']);
+    const pinned = await openSessionOnServer(http, SAFETY, 'APPSERVER-RPSXX');
+    expect(pinned).toMatchObject({ instance: 'appserver-rpsxx', probes: 3 });
+    expect(pinned.http).toBe(sessions[2]);
+    expect(sessions[0]!.get).toHaveBeenNthCalledWith(
+      1,
+      '/sap/bc/adt/core/http/systeminformation',
+      { Accept: 'application/vnd.sap.adt.core.http.systeminformation.v1+json' },
+      { suppressNotFoundLog: true },
+    );
+    expect(sessions[0]!.get).toHaveBeenCalledTimes(1);
+    expect(sessions[0]!.endStatefulSession).toHaveBeenCalledWith({});
+    expect(ended()).toEqual([sessions[0], sessions[1]]);
+  });
+
+  it('opens sessions ahead of the run until two share a server', async () => {
+    const { http, sessions, ended } = balancedSap(['appserver-t4w2x', 'appserver-rpsxx', 'appserver-t4w2x']);
+    const ahead = await openSessionsAhead(http, SAFETY);
+    expect([...ahead.byServer.entries()]).toEqual([
+      ['APPSERVER-T4W2X', sessions[0]],
+      ['APPSERVER-RPSXX', sessions[1]],
+    ]);
+    expect(ahead.trigger).toBe(sessions[2]);
+    expect(ended()).toEqual([]);
+  });
+
+  it('opens nothing to pin when SAP names no server, and stops at maxProbes distinct servers', async () => {
+    const unnamed = balancedSap([undefined]);
+    expect(await openSessionsAhead(unnamed.http, SAFETY)).toEqual({ byServer: new Map() });
+    expect(unnamed.sessions).toHaveLength(1);
+    const absent = balancedSap(['appserver-t4w2x'], vi.fn().mockRejectedValue(new AdtApiError('no', 404, '/x')));
+    expect(await openSessionsAhead(absent.http, SAFETY)).toEqual({ byServer: new Map() });
+
+    const many = balancedSap(['appserver-a', 'appserver-b', 'appserver-c']);
+    const ahead = await openSessionsAhead(many.http, SAFETY, { maxProbes: 3 });
+    expect([...ahead.byServer.keys()]).toEqual(['APPSERVER-A', 'APPSERVER-B', 'APPSERVER-C']);
+    expect(ahead.trigger).toBeUndefined();
+
+    const broken = balancedSap(['appserver-a'], vi.fn().mockRejectedValue(new AdtApiError('boom', 500, '/x')));
+    await expect(openSessionsAhead(broken.http, SAFETY)).rejects.toThrow(AdtApiError);
+  });
+
+  it('ends the sessions it already opened when a later probe fails', async () => {
+    const first = {
+      get: vi.fn().mockResolvedValue(ok('{}')),
+      endStatefulSession: vi.fn().mockResolvedValue(true),
+      sessionContextId: contextOn('appserver-a'),
+    };
+    const second = {
+      get: vi.fn().mockRejectedValue(new AdtApiError('boom', 500, '/x')),
+      endStatefulSession: vi.fn().mockResolvedValue(undefined),
+      sessionContextId: undefined,
+    };
+    const http = {
+      openStatefulSession: vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second),
+    } as unknown as AdtHttpClient;
+    await expect(openSessionsAhead(http, SAFETY)).rejects.toThrow(AdtApiError);
+    expect(first.endStatefulSession).toHaveBeenCalledTimes(1);
+    expect(second.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes the first session as is when the debuggee names no server', async () => {
+    const { http, sessions } = balancedSap(['appserver-t4w2x']);
+    expect(await openSessionOnServer(http, SAFETY, undefined)).toEqual({ http: sessions[0], probes: 0 });
+    expect(sessions[0]!.get).not.toHaveBeenCalled();
+  });
+
+  it('takes the probed session when SAP does not say where it landed', async () => {
+    const { http, sessions, ended } = balancedSap([undefined]);
+    expect(await openSessionOnServer(http, SAFETY, 'appserver-rpsxx')).toEqual({ http: sessions[0], probes: 1 });
+    expect(ended()).toEqual([]);
+  });
+
+  it('takes the session as is when the release has no resource to probe with', async () => {
+    const absent = balancedSap(['appserver-t4w2x'], vi.fn().mockRejectedValue(new AdtApiError('no', 404, '/x')));
+    expect(await openSessionOnServer(absent.http, SAFETY, 'appserver-rpsxx')).toEqual({
+      http: absent.sessions[0],
+      probes: 1,
+    });
+    const broken = balancedSap(['appserver-t4w2x'], vi.fn().mockRejectedValue(new AdtApiError('boom', 500, '/x')));
+    await expect(openSessionOnServer(broken.http, SAFETY, 'appserver-rpsxx')).rejects.toThrow(AdtApiError);
+  });
+
+  it('returns the last session after maxProbes misses, saying where it landed', async () => {
+    const { http, sessions, ended } = balancedSap(['appserver-t4w2x']);
+    const pinned = await openSessionOnServer(http, SAFETY, 'appserver-rpsxx', { maxProbes: 3 });
+    expect(pinned).toMatchObject({ instance: 'appserver-t4w2x', probes: 3 });
+    expect(pinned.http).toBe(sessions[2]);
+    expect(ended()).toEqual([sessions[0], sessions[1]]);
+  });
+
+  it("ends a session through the transport's own close (the Eclipse close-session request)", async () => {
+    const session = Object.assign(mockHttp(), { endStatefulSession: vi.fn().mockResolvedValue(false) });
+    await expect(endSession(session, SAFETY, { deadline: 42 })).resolves.toBeUndefined();
+    expect(session.endStatefulSession).toHaveBeenCalledWith({ deadline: 42 });
+    expect(session.get).not.toHaveBeenCalled();
   });
 });
 

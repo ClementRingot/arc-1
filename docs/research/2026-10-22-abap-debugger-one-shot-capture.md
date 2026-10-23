@@ -1,10 +1,11 @@
 # ABAP debugger for ARC-1 — one-shot breakpoint capture dossier
 
-> **Evidence level: corroborated, NOT yet live-verified by ARC-1.** No SAP system was reachable from
-> the session that produced this dossier (the session's ARC-1 MCP instance failed to connect), so every
-> contract fact below comes from three independent client implementations that drive the same SAP
-> resources, two of them with recorded live verification. The feature ships **default-off** behind
-> `SAP_ALLOW_DEBUG` until the Phase-3/6 live checks in §9 have been run on 7.50, 758 and 816.
+> **Evidence level: corroborated; live-verified on the BTP ABAP Environment only (2026-10-23, §9).**
+> No SAP system was reachable from the session that produced this dossier, so the contract facts
+> below come from three independent client implementations that drive the same SAP resources, two of
+> them with recorded live verification; facts marked **(L)** were since observed live by ARC-1. The
+> feature ships **default-off** behind `SAP_ALLOW_DEBUG` until the remaining §9 checks have been run
+> on 7.50, 758 and 816.
 
 ## 1. Goal
 
@@ -28,7 +29,8 @@ artifact of how vibing-steampunk (VSP) first drove it:
   them."*
 
 What the debugger needs is **one stateful ADT session (`sap-contextid`) that lives from the attach to
-the release.** ARC-1 already has exactly that primitive: `AdtHttpClient.withStatefulSession()`.
+the release, on the application server the debuggee waits on** (§3.6). ARC-1 already had the
+primitive: `AdtHttpClient.withStatefulSession()`, now also `openStatefulSession()` for picking one.
 
 ## 3. Verified-by-reference ADT contract
 
@@ -85,7 +87,7 @@ and older) and refuses when neither SAP nor an authoritative configuration names
 | Call | Contract |
 |---|---|
 | Conflict check | `GET …?debuggingMode=user&requestUser=&terminalId=&ideId=&checkConflict=true` → empty body = no conflict; an ADT exception whose `com.sap.adt.communicationFramework.subType` is `conflictDetected`/`conflictNotification` = another IDE (Eclipse, VS Code, …) is listening for the user (A, V). |
-| Listen | `POST …?debuggingMode=user&requestUser=&terminalId=&ideId=&checkConflict=true&isNotifiedOnConflict=true&timeout=<s>`, `Accept: application/vnd.sap.as+xml` (S). **Long poll**: returns when a debuggee stops, on conflict, or at the server timeout. **Empty body = nobody stopped** (S). A caught debuggee arrives as `<asx:abap><asx:values><DATA><STPDA_DEBUGGEE>` with `DEBUGGEE_ID`, `DEBUGGEE_USER`, `PRG_CURR`, `INCL_CURR`, `LINE_CURR`, `DBGEE_KIND`, `IS_ATTACH_IMPOSSIBLE`, newer releases also `URI`, `TYPE`, `NAME` (A, S). |
+| Listen | `POST …?debuggingMode=user&requestUser=&terminalId=&ideId=&checkConflict=true&isNotifiedOnConflict=true&timeout=<s>`, `Accept: application/vnd.sap.as+xml` (S). **Long poll**: returns when a debuggee stops, on conflict, or at the server timeout. **Empty body = nobody stopped** (S). A caught debuggee arrives as `<asx:abap><asx:values><DATA><STPDA_DEBUGGEE>` with `DEBUGGEE_ID`, `DEBUGGEE_USER`, `PRG_CURR`, `INCL_CURR`, `LINE_CURR`, `DBGEE_KIND`, `IS_ATTACH_IMPOSSIBLE`, newer releases also `URI`, `TYPE`, `NAME` (A, S), and where the debuggee waits: `INSTANCE_NAME` (the server name `sap-contextid` carries), `IS_SAME_SERVER` (relative to the listener's server), `CAN_ADT_CROSS_SERVER` (A, L). |
 | Stop | `DELETE …?debuggingMode=user&requestUser=<USER>` — **by user only**; a DELETE quoting the ids "matches no row" and the registration silently swallows the next debuggee (S, live). Removing it also ends external debugging for the user and drops the user's external breakpoints (S). |
 
 The registration survives the poll's return — it must be deleted explicitly (S). A client that stops
@@ -97,7 +99,7 @@ removes the registration through it.
 
 | Operation | Request | Notes |
 |---|---|---|
-| Attach | `POST /sap/bc/adt/debugger?method=attach&debuggeeId=&dynproDebugging=true&debuggingMode=user&requestUser=` | Response `<dbg:attach isSteppingPossible isPostMortem …><reachedBreakpoints><breakpoint id kind/>`. The debuggee is attachable only while it waits — listen → attach must be back-to-back, otherwise `invalidDebuggee` (`CX_ABDBG_ACTEXT_CANNOT_ATTACH`) (S). |
+| Attach | `POST /sap/bc/adt/debugger?method=attach&debuggeeId=&dynproDebugging=true&debuggingMode=user&requestUser=` | Response `<dbg:attach isSteppingPossible isPostMortem …><reachedBreakpoints><breakpoint id kind/>`. The debuggee is attachable only while it waits — listen → attach must be back-to-back, otherwise `invalidDebuggee` (`CX_ABDBG_ACTEXT_CANNOT_ATTACH`) (S). **Only from the debuggee's own application server** (§3.6, L). |
 | Stack | `GET /sap/bc/adt/debugger/stack?method=getStack&emode=_&semanticURIs=true`; **7.50 has no `/debugger/stack`** (404) → `POST /sap/bc/adt/debugger?method=getStack&emode=_&semanticURIs=true` (A gates on discovery, S retries on 404 — live 7.50). | `<dbg:stack><stackEntry stackPosition stackType stackUri programName includeName line eventType eventName sourceType systemProgram isVit uri/>`. |
 | Variables | `POST /sap/bc/adt/debugger?method=getVariables`, body `<asx:abap><asx:values><DATA><STPDA_ADT_VARIABLE><ID>LV_X</ID></STPDA_ADT_VARIABLE>…`, `Content-Type: application/vnd.sap.as+xml;charset=UTF-8;dataname=com.sap.adt.debugger.Variables` | Rows `STPDA_ADT_VARIABLE` (`ID`, `NAME`, `DECLARED_TYPE_NAME`, `ACTUAL_TYPE_NAME`, `META_TYPE`, `VALUE`, `TECHNICAL_TYPE`, `LENGTH`, `TABLE_LINES`, `IS_VALUE_INCOMPLETE`, …). Table rows are addressed as `ITAB[1]` (V). |
 | Child variables | `POST /sap/bc/adt/debugger?method=getChildVariables`, body `<DATA><HIERARCHIES><STPDA_ADT_VARIABLE_HIERARCHY><PARENT_ID>@ROOT</PARENT_ID>…`, `dataname=com.sap.adt.debugger.ChildVariables` | `HIERARCHIES` (`PARENT_ID`, `CHILD_ID`, `CHILD_NAME`) + `VARIABLES`. `@ROOT`'s children are the frame's scopes (V lists them as the Variables-view scopes); several parents fit in one request. Structure components = children of the structure id (V). |
@@ -121,7 +123,46 @@ Errors are ADT exception documents; the machine-readable part is
 | 7.50 | No `/debugger/stack` resource → dispatcher `getStack`. | S (live) |
 | < 7.51 | ADT does not honor `X-sap-adt-sessiontype: stateful` natively (`src/adt/release.ts`, issue #293) — the attach lives in a session the next request cannot reach unless the `abapfs_extensions` enhancement is installed. Expect `noSessionAttached` after attach. | ARC-1 #293 |
 | 7.58 | `method=detach` unknown; breakpoint kinds line/statement/exception/message verified. | S (live A4H) |
-| BTP ABAP | Same resources (Eclipse debugs BTP); the internal ABAP user (`CB99…`) is only known after a cloud create (`noteInternalUser`). | ARC-1 |
+| BTP ABAP | Same resources (Eclipse debugs BTP). Several application servers (pods `appserver-…`): the attach must come from the debuggee's (§3.6). `systeminformation` names the internal user (`CB99…`) under PP. | L |
+
+### 3.6 Reaching the debuggee's application server (live, BTP ABAP, 2026-10-23)
+
+On a system with several application servers the attach must come from **a session on the server the
+debuggee waits on** (`INSTANCE_NAME`). Observed on the BTP ABAP Environment trial (two servers):
+
+- From any other server SAP answers **500 `invalidDebuggee`** (`CX_ABDBG_ACTEXT_CANNOT_ATTACH`,
+  raised in `CL_ABDBG_ACT_FOR_ATTACH__USER`), although the debuggee reports `IS_ATTACH_IMPOSSIBLE=false`
+  and `CAN_ADT_CROSS_SERVER=true`. `dynproDebugging=true|false` makes no difference.
+- **The refused attempt spoils the debuggee**: every later attach fails the same way, from the right
+  server too (the exception moves from line 24 to line 9 of the same method). Retrying is useless; the
+  first attach has to be from the right server.
+- Running the listener on a stateful session and attaching on it does not help: the debuggee waits on
+  whichever server ran the trigger, not on the listener's (`IS_SAME_SERVER=false`, `LISTENER_CTX_ID`
+  empty).
+- The first attach from a session on the debuggee's server succeeds, and stack, variables and steps
+  follow on that session.
+
+Nothing addresses a server directly. A new stateful session is load-balanced, and SAP names where it
+landed in the `sap-contextid` cookie, `SID:ANON:<instance>:<context id>` (`appserver-t4w2x` there,
+`<host>_<SID>_<nr>` on classic systems), which the load balancer then routes the session by.
+
+**Find the server before the stop, not after.** The balancer prefers the least-loaded server, and a
+stopped debuggee loads its own (it holds a work process). So once a debuggee waits, new sessions avoid
+exactly the server it waits on: 16 of 16 probes landed on the other server, either way round, with
+fresh TCP connections too (`Connection: close` changed nothing). Probing after the stop worked only
+when other users' load happened to tip the balance.
+
+So the capture opens its sessions **before the run** (`openSessionsAhead`, `src/adt/debugger.ts`):
+stateful sessions with one cheap `GET /core/http/systeminformation` each, until two land on the same
+server (at most 6; a balanced pair takes 3). ARC-1's unit-test trigger runs on the second session of
+that pair, so the debuggee stops on its server, where the first session waits to attach. For a run
+ARC-1 does not start (`trigger="none"`, or `http`), the attach takes whichever waiting session is on
+the debuggee's server. Only when none is does it probe after the stop (`openSessionOnServer`, at
+most 8) — and then usually fails, with a message saying why. Every session it opens is closed the way
+Eclipse ADT closes one (`AdtHttpClient.endStatefulSession`: the dedicated close-session request on
+that context): unused ones at once, the debugger's own after the release, the trigger's after its run. Without a
+server name (no `INSTANCE_NAME`, another cookie shape, no systeminformation on 7.50), the attach goes
+wherever it lands, as before.
 
 ## 4. Why a one-shot capture, not an interactive session
 
@@ -160,11 +201,12 @@ model needs must be asked for up front (`variables`, `steps`), which also keeps 
 Flow: ask SAP who the session is (§7.3) → per-user in-process mutex + per-instance capture cap →
 conflict check → set breakpoints (fresh `ideId`,
 full sync) → start the long poll (stateless) → arm delay → start the trigger → race (hit / trigger
-finished / timeout) → attach + stack + variables + steps on one `withStatefulSession` → release
+finished / timeout) → attach + stack + variables + steps on one stateful session on the debuggee's
+application server, opened before the run (§3.6) → release
 (clear session breakpoints, `stepContinue` until ended; `terminateDebuggee` only as last resort) →
 always: clear external breakpoints, delete the listener, settle the trigger.
 
-Output (JSON): `hit`, `debuggee`, `breakpoints` (set / refused with SAP's message), `stoppedAt`,
+Output (JSON): `hit`, `debuggee` (incl. `server`), `breakpoints` (set / refused with SAP's message), `stoppedAt`,
 `stack` (customer frames, system frames counted), `variables` (simple values, one level of structure
 components, first table rows; values truncated), `steps`, `release`, `trigger` (outcome), `warnings`.
 
@@ -260,6 +302,15 @@ endpoint" after probing `/sap/bc/adt/core/systeminformation` (no `/http/`), `sec
   the v1 triggers.
 
 ## 9. Live verification still owed (run before turning it on for real users)
+
+**Done on the BTP ABAP Environment trial (2026-10-23, PP through XSUAA, `trigger=unittest`):** the
+session user is the internal `CB99…` user (10); a listening Eclipse is refused with SAP's conflict
+text and nothing is armed (4); a line breakpoint in a class method is hit, with stack, named locals
+and three `stepOver`s with changing values, then released by `stepContinue` with the unit test
+passing (1, BTP only); an exception breakpoint (`CX_SY_ZERODIVIDE`, caught) stops where it is
+raised; the long poll and trigger ran side by side (7). It took the §3.6 fix: before it, every attach
+failed with `invalidDebuggee`. Still owed on BTP: `trigger=http`, and a run long
+enough to probe the poll timeout under PP (11).
 
 1. 758 + 816: `trigger=unittest` on a class with a line breakpoint → `hit:true`, stack top = the line,
    locals present; verify the `@ROOT` scope names (`CHILD_NAME`) and that the walk returns values.

@@ -76,6 +76,10 @@ interface Call {
   query: URLSearchParams;
   body: string;
   stateful: boolean;
+  /** `X-sap-adt-sessiontype` as sent (stateful / stateless / undefined). */
+  sessionType?: string;
+  /** Multi-server fake: the application server the request's session is pinned to. */
+  server?: string;
 }
 
 interface FakeSapOptions {
@@ -90,7 +94,25 @@ interface FakeSapOptions {
   breakpointsForbidden?: boolean;
   /** systeminformation names this session user; unset = the resource is absent (404, SAP_BASIS <= 7.50). */
   sessionUser?: string;
+  /** Multi-server system: each new stateful session lands on the next of these (named in sap-contextid);
+   *  while a debuggee waits, new sessions avoid its server — SAP's balancer prefers the least-loaded one. */
+  servers?: string[];
+  /** With servers: where a run ARC-1 did not pin stops (INSTANCE_NAME) — a stateless trigger or the user's
+   *  own run. An attach from any other server is refused and spoils the debuggee for every later one. */
+  debuggeeServer?: string;
+  /** trigger="none": the user's own run reaches the breakpoint. */
+  runByUser?: boolean;
+  /** SAP flags the stopped debuggee IS_ATTACH_IMPOSSIBLE. */
+  attachImpossible?: boolean;
 }
+
+const cannotAttach = (line: number) =>
+  ENDED.replace('debuggeeEnded', 'invalidDebuggee')
+    .replace('Debuggee ended', 'An exception was raised')
+    .replace(
+      '</properties>',
+      `<entry key="previous2SourcePositionProgram">CL_ABDBG_ACT_FOR_ATTACH__USER=CP</entry><entry key="previous2SourcePositionSourceLine">${line} </entry><entry key="previous2ExceptionClassName">CX_ABDBG_ACTEXT_CANNOT_ATTACH</entry></properties>`,
+    );
 
 function installFakeSap(options: FakeSapOptions = {}) {
   const calls: Call[] = [];
@@ -103,6 +125,18 @@ function installFakeSap(options: FakeSapOptions = {}) {
   const triggeredPromise = new Promise<void>((resolve) => {
     triggered = resolve;
   });
+  let sessionsOpened = 0;
+  let spoiled = false;
+  /** Multi-server: the server the debuggee waits on, from its stop to its release. */
+  let stoppedOn: string | undefined;
+  const debuggeeXml = () => {
+    const xml = options.attachImpossible
+      ? DEBUGGEE_XML.replace('<IS_ATTACH_IMPOSSIBLE>false', '<IS_ATTACH_IMPOSSIBLE>X')
+      : DEBUGGEE_XML;
+    return stoppedOn
+      ? xml.replace('</STPDA_DEBUGGEE>', `<INSTANCE_NAME>${stoppedOn}</INSTANCE_NAME></STPDA_DEBUGGEE>`)
+      : xml;
+  };
 
   mockFetch.mockReset();
   mockFetch.mockImplementation(
@@ -114,145 +148,172 @@ function installFakeSap(options: FakeSapOptions = {}) {
       const method = init?.method ?? 'GET';
       const body = typeof init?.body === 'string' ? init.body : '';
       const headers = init?.headers ?? {};
+      const sessionType = headers['X-sap-adt-sessiontype'];
+      const context = /sap-contextid=SID%3aANON%3a([^%;]+)%3a/.exec(headers.Cookie ?? '')?.[1];
+      // A stateful request without a context opens a session on the next server (load balancing).
+      const unloaded = options.servers?.filter((server) => server !== stoppedOn);
+      const balanced = unloaded?.length ? unloaded : options.servers;
+      const opened =
+        balanced && sessionType === 'stateful' && !context ? balanced[sessionsOpened++ % balanced.length] : undefined;
       const call: Call = {
         method,
         path: parsed.pathname,
         query: parsed.searchParams,
         body,
-        stateful: headers['X-sap-adt-sessiontype'] === 'stateful',
+        stateful: sessionType === 'stateful',
+        ...(sessionType ? { sessionType } : {}),
+        ...((context ?? opened) ? { server: context ?? opened } : {}),
       };
       calls.push(call);
-      const path = parsed.pathname.toLowerCase();
-      const q = parsed.searchParams;
-
-      if (method === 'HEAD' && path === '/sap/bc/adt/core/discovery')
-        return mockResponse(200, '', { 'x-csrf-token': 'T' });
-      if (method === 'GET' && path === '/sap/bc/adt/core/http/systeminformation' && options.sessionUser)
-        return mockResponse(
-          200,
-          JSON.stringify({ systemID: 'A4H', client: '001', userName: options.sessionUser, language: 'EN' }),
+      const response = await answer(call, method, body, init);
+      if (opened)
+        response.headers.append(
+          'set-cookie',
+          `sap-contextid=SID%3aANON%3a${opened}%3aCTX${sessionsOpened}-NEW; path=/`,
         );
-      if (method === 'GET' && path === '/sap/bc/adt/oo/classes/zcl_order/source/main')
-        return mockResponse(200, CLASS_SOURCE);
-      if (path === '/sap/bc/adt/debugger/listeners') {
-        if (method === 'GET') {
-          return options.conflict
-            ? mockResponse(
-                409,
-                ENDED.replace('debuggeeEnded', 'conflictDetected').replace(
-                  '</properties>',
-                  '<entry key="conflictText">ADMIN is debugged in Eclipse</entry></properties>',
-                ),
-              )
-            : mockResponse(200, '');
-        }
-        if (method === 'DELETE') return mockResponse(200, '');
-        // POST: the long poll.
-        if (options.hit) {
-          await triggeredPromise;
-          return mockResponse(200, DEBUGGEE_XML);
-        }
-        if (options.listenerTimesOut) return mockResponse(200, '');
-        return new Promise<Response>((_, reject) => {
-          init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), {
-            once: true,
-          });
-        });
-      }
-      if (path === '/sap/bc/adt/debugger/breakpoints' && method === 'POST') {
-        if (options.breakpointsForbidden) {
-          return mockResponse(
-            403,
-            ENDED.replace('debuggeeEnded', 'notAuthorized').replace('Debuggee ended', 'No authorization to debug'),
-          );
-        }
-        if (body.includes('scope="debugger"'))
-          return mockResponse(200, '<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger"/>');
-        const items = [...body.matchAll(/clientId="arc1-line-(\d+)"/g)].map((m) => {
-          const line = Number(m[1]);
-          return line >= (options.acceptLinesFrom ?? 1)
-            ? `<breakpoint kind="line" clientId="arc1-line-${line}" id="BP-L${line}" adtcore:uri="/sap/bc/adt/oo/classes/zcl_order/source/main#start=${line}"/>`
-            : `<breakpoint kind="line" clientId="arc1-line-${line}" errorMessage="Cannot create a breakpoint at this position"/>`;
-        });
-        if (body.includes('kind="exception"')) {
-          items.push(
-            '<breakpoint kind="exception" clientId="arc1-exception" id="BP-EXC" exceptionClass="CX_SY_ZERODIVIDE"/>',
-          );
-        }
-        return mockResponse(
-          200,
-          `<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger" xmlns:adtcore="http://www.sap.com/adt/core">${items.join('')}</dbg:breakpoints>`,
-        );
-      }
-      if (path.startsWith('/sap/bc/adt/debugger/breakpoints/') && method === 'DELETE') return mockResponse(200, '');
-      if (path === '/sap/bc/adt/abapunit/testruns') {
-        triggered();
-        if (options.hit) await releasedPromise;
-        return mockResponse(200, AUNIT_PASSED);
-      }
-      if (path === '/sap/bc/adt/debugger/stack') return mockResponse(200, stackXml(currentLine));
-      if (path === '/sap/bc/adt/debugger') {
-        switch (q.get('method')) {
-          case 'attach':
-            return mockResponse(
-              200,
-              '<dbg:attach xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true"/>',
-            );
-          case 'stepOver':
-            currentLine++;
-            return mockResponse(
-              200,
-              '<dbg:step xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true"/>',
-            );
-          case 'stepContinue':
-            released();
-            return mockResponse(400, ENDED);
-          case 'getChildVariables': {
-            const parents = [...body.matchAll(/<PARENT_ID>([^<]+)<\/PARENT_ID>/g)].map((m) => m[1] as string);
-            if (parents.includes('@ROOT'))
-              return mockResponse(
-                200,
-                asx(`<HIERARCHIES>${hierarchy('@ROOT', '@LOCALS', 'Locals')}</HIERARCHIES><VARIABLES/>`),
-              );
-            const rows = parents.flatMap((parent) => (CHILDREN[parent] ?? []).map((child) => hierarchy(parent, child)));
-            const vars = parents.flatMap((parent) =>
-              (CHILDREN[parent] ?? []).map(
-                (child) => VARIABLES[child] ?? variable(child, 'simple', LEAF_VALUES[child] ?? ''),
-              ),
-            );
-            return mockResponse(
-              200,
-              asx(`<HIERARCHIES>${rows.join('')}</HIERARCHIES><VARIABLES>${vars.join('')}</VARIABLES>`),
-            );
-          }
-          case 'getVariables': {
-            const ids = [...body.matchAll(/<ID>([^<]+)<\/ID>/g)].map((m) =>
-              (m[1] as string).replace('ME-&gt;', 'ME->'),
-            );
-            const values = ids.flatMap((id) =>
-              id === 'LV_TOTAL'
-                ? [variable('LV_TOTAL', 'simple', String(30 + currentLine))]
-                : VARIABLES[id]
-                  ? [VARIABLES[id]]
-                  : [],
-            );
-            return mockResponse(200, asx(values.join('')));
-          }
-        }
-      }
-      if (path.startsWith('/sap/opu/odata4/')) {
-        triggered();
-        return mockResponse(200, '{"value":[]}');
-      }
-      if (path === '/sap/bc/adt/repository/informationsystem/search') {
-        return mockResponse(
-          200,
-          '<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core"><adtcore:objectReference adtcore:uri="/sap/bc/adt/oo/classes/ztc_order" adtcore:type="CLAS/OC" adtcore:name="ZTC_ORDER" adtcore:packageName="$TMP"/></adtcore:objectReferences>',
-        );
-      }
-      return mockResponse(404, `unexpected ${method} ${parsed.pathname}${parsed.search}`);
+      return response;
     },
   );
+
+  async function answer(call: Call, method: string, body: string, init?: { signal?: AbortSignal }): Promise<Response> {
+    const parsed = new URL(`http://sap${call.path}?${call.query.toString()}`);
+    const path = parsed.pathname.toLowerCase();
+    const q = parsed.searchParams;
+
+    if (method === 'HEAD' && path === '/sap/bc/adt/core/discovery')
+      return mockResponse(200, '', { 'x-csrf-token': 'T' });
+    // Eclipse's close-session request (AdtHttpClient.endStatefulSession), sent on the context it closes.
+    if (method === 'GET' && path === '/sap/bc/adt/core/http/sessions') return mockResponse(200, '');
+    if (method === 'GET' && path === '/sap/bc/adt/core/http/systeminformation' && options.sessionUser)
+      return mockResponse(
+        200,
+        JSON.stringify({ systemID: 'A4H', client: '001', userName: options.sessionUser, language: 'EN' }),
+      );
+    if (method === 'GET' && path === '/sap/bc/adt/oo/classes/zcl_order/source/main')
+      return mockResponse(200, CLASS_SOURCE);
+    if (path === '/sap/bc/adt/debugger/listeners') {
+      if (method === 'GET') {
+        return options.conflict
+          ? mockResponse(
+              409,
+              ENDED.replace('debuggeeEnded', 'conflictDetected').replace(
+                '</properties>',
+                '<entry key="conflictText">ADMIN is debugged in Eclipse</entry></properties>',
+              ),
+            )
+          : mockResponse(200, '');
+      }
+      if (method === 'DELETE') return mockResponse(200, '');
+      // POST: the long poll.
+      if (options.hit) {
+        if (options.runByUser) stoppedOn = options.servers ? options.debuggeeServer : undefined;
+        else await triggeredPromise;
+        return mockResponse(200, debuggeeXml());
+      }
+      if (options.listenerTimesOut) return mockResponse(200, '');
+      return new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), {
+          once: true,
+        });
+      });
+    }
+    if (path === '/sap/bc/adt/debugger/breakpoints' && method === 'POST') {
+      if (options.breakpointsForbidden) {
+        return mockResponse(
+          403,
+          ENDED.replace('debuggeeEnded', 'notAuthorized').replace('Debuggee ended', 'No authorization to debug'),
+        );
+      }
+      if (body.includes('scope="debugger"'))
+        return mockResponse(200, '<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger"/>');
+      const items = [...body.matchAll(/clientId="arc1-line-(\d+)"/g)].map((m) => {
+        const line = Number(m[1]);
+        return line >= (options.acceptLinesFrom ?? 1)
+          ? `<breakpoint kind="line" clientId="arc1-line-${line}" id="BP-L${line}" adtcore:uri="/sap/bc/adt/oo/classes/zcl_order/source/main#start=${line}"/>`
+          : `<breakpoint kind="line" clientId="arc1-line-${line}" errorMessage="Cannot create a breakpoint at this position"/>`;
+      });
+      if (body.includes('kind="exception"')) {
+        items.push(
+          '<breakpoint kind="exception" clientId="arc1-exception" id="BP-EXC" exceptionClass="CX_SY_ZERODIVIDE"/>',
+        );
+      }
+      return mockResponse(
+        200,
+        `<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger" xmlns:adtcore="http://www.sap.com/adt/core">${items.join('')}</dbg:breakpoints>`,
+      );
+    }
+    if (path.startsWith('/sap/bc/adt/debugger/breakpoints/') && method === 'DELETE') return mockResponse(200, '');
+    if (path === '/sap/bc/adt/abapunit/testruns') {
+      if (options.hit && options.servers) stoppedOn = call.server ?? options.debuggeeServer;
+      triggered();
+      if (options.hit) await releasedPromise;
+      return mockResponse(200, AUNIT_PASSED);
+    }
+    if (path === '/sap/bc/adt/debugger/stack') return mockResponse(200, stackXml(currentLine));
+    if (path === '/sap/bc/adt/debugger') {
+      switch (q.get('method')) {
+        case 'attach':
+          if (stoppedOn && (spoiled || call.server !== stoppedOn)) {
+            const line = spoiled ? 9 : 24;
+            spoiled = true;
+            released(); // SAP lets the unattached debuggee run on once its wait times out
+            return mockResponse(500, cannotAttach(line));
+          }
+          return mockResponse(
+            200,
+            '<dbg:attach xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true"/>',
+          );
+        case 'stepOver':
+          currentLine++;
+          return mockResponse(200, '<dbg:step xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true"/>');
+        case 'stepContinue':
+          released();
+          stoppedOn = undefined;
+          return mockResponse(400, ENDED);
+        case 'getChildVariables': {
+          const parents = [...body.matchAll(/<PARENT_ID>([^<]+)<\/PARENT_ID>/g)].map((m) => m[1] as string);
+          if (parents.includes('@ROOT'))
+            return mockResponse(
+              200,
+              asx(`<HIERARCHIES>${hierarchy('@ROOT', '@LOCALS', 'Locals')}</HIERARCHIES><VARIABLES/>`),
+            );
+          const rows = parents.flatMap((parent) => (CHILDREN[parent] ?? []).map((child) => hierarchy(parent, child)));
+          const vars = parents.flatMap((parent) =>
+            (CHILDREN[parent] ?? []).map(
+              (child) => VARIABLES[child] ?? variable(child, 'simple', LEAF_VALUES[child] ?? ''),
+            ),
+          );
+          return mockResponse(
+            200,
+            asx(`<HIERARCHIES>${rows.join('')}</HIERARCHIES><VARIABLES>${vars.join('')}</VARIABLES>`),
+          );
+        }
+        case 'getVariables': {
+          const ids = [...body.matchAll(/<ID>([^<]+)<\/ID>/g)].map((m) => (m[1] as string).replace('ME-&gt;', 'ME->'));
+          const values = ids.flatMap((id) =>
+            id === 'LV_TOTAL'
+              ? [variable('LV_TOTAL', 'simple', String(30 + currentLine))]
+              : VARIABLES[id]
+                ? [VARIABLES[id]]
+                : [],
+          );
+          return mockResponse(200, asx(values.join('')));
+        }
+      }
+    }
+    if (path.startsWith('/sap/opu/odata4/')) {
+      if (options.hit && options.servers) stoppedOn = call.server ?? options.debuggeeServer;
+      triggered();
+      return mockResponse(200, '{"value":[]}');
+    }
+    if (path === '/sap/bc/adt/repository/informationsystem/search') {
+      return mockResponse(
+        200,
+        '<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core"><adtcore:objectReference adtcore:uri="/sap/bc/adt/oo/classes/ztc_order" adtcore:type="CLAS/OC" adtcore:name="ZTC_ORDER" adtcore:packageName="$TMP"/></adtcore:objectReferences>',
+      );
+    }
+    return mockResponse(404, `unexpected ${method} ${parsed.pathname}${parsed.search}`);
+  }
   return { calls };
 }
 
@@ -368,6 +429,65 @@ describe('SAPDiagnose action="debug" — a hit', () => {
     ]);
   });
 
+  it('runs the unit tests and attaches on one server, both pinned before the stop (multi-server system)', async () => {
+    const { calls } = installFakeSap({
+      hit: true,
+      sessionUser: 'ADMIN',
+      servers: ['appserver-t4w2x', 'appserver-rpsxx'],
+    });
+    const { result, json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, variables: ['LV_TOTAL'] });
+
+    expect(result.isError).toBeFalsy();
+    expect(json).toMatchObject({
+      hit: true,
+      attached: true,
+      debuggee: { server: 'appserver-t4w2x' },
+      variables: [{ name: 'LV_TOTAL', value: '39' }],
+      release: { released: true, via: 'continue' },
+      trigger: { status: 'completed' },
+    });
+    // Before the run, while the balancer still alternates: sessions until two share a server.
+    const probes = calls.filter((c) => c.path === '/sap/bc/adt/core/http/systeminformation' && c.stateful);
+    expect(probes.map((c) => c.server)).toEqual(['appserver-t4w2x', 'appserver-rpsxx', 'appserver-t4w2x']);
+    // The unit tests run on the pair's second session, so the debuggee stops on its server ...
+    expect(named(calls, 'POST', '/sap/bc/adt/abapunit/testruns').map((c) => c.server)).toEqual(['appserver-t4w2x']);
+    // ... where the first one waits: a single attach and the whole debugger session there, no probing after the stop.
+    const session = calls.filter((c) => c.path.startsWith('/sap/bc/adt/debugger') && c.query.get('method'));
+    expect(session.filter((c) => c.query.get('method') === 'attach')).toHaveLength(1);
+    expect(session.every((c) => c.server === 'appserver-t4w2x')).toBe(true);
+    // Every session ARC-1 opened ends with Eclipse's close-session request on its own context: the unused
+    // one, the debugger's after the release, the trigger's after its run.
+    const closes = calls.filter((c) => c.sessionType === 'stateless');
+    expect(closes.every((c) => c.method === 'GET' && c.path === '/sap/bc/adt/core/http/sessions')).toBe(true);
+    expect(
+      calls
+        .filter((c) => c.sessionType === 'stateless')
+        .map((c) => c.server)
+        .sort(),
+    ).toEqual(['appserver-rpsxx', 'appserver-t4w2x', 'appserver-t4w2x']);
+  });
+
+  it("attaches to the user's own run from the session already waiting on its server", async () => {
+    const { calls } = installFakeSap({
+      hit: true,
+      runByUser: true,
+      sessionUser: 'ADMIN',
+      servers: ['appserver-t4w2x', 'appserver-rpsxx'],
+      debuggeeServer: 'appserver-rpsxx',
+    });
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' });
+
+    expect(json).toMatchObject({
+      hit: true,
+      attached: true,
+      debuggee: { server: 'appserver-rpsxx' },
+      release: { released: true },
+    });
+    expect(calls.filter((c) => c.query.get('method') === 'attach').map((c) => c.server)).toEqual(['appserver-rpsxx']);
+    // The sessions opened ahead covered both servers: nothing probed after the stop.
+    expect(calls.filter((c) => c.path === '/sap/bc/adt/core/http/systeminformation' && c.stateful)).toHaveLength(3);
+  });
+
   it('refuses a second capture for the same SAP user while one is running', async () => {
     installFakeSap({ hit: true });
     const client = createClient();
@@ -376,6 +496,57 @@ describe('SAPDiagnose action="debug" — a hit', () => {
     expect(second.result.isError).toBe(true);
     expect(second.text).toContain('already running');
     expect((await first).json?.hit).toBe(true);
+  });
+});
+
+describe('SAPDiagnose action="debug" — an attach SAP refuses', () => {
+  it('names the server it could not reach and releases nothing it never attached', async () => {
+    // The balancer only ever offers t4w2x; the user's run stops on rpsxx.
+    const { calls } = installFakeSap({
+      hit: true,
+      runByUser: true,
+      sessionUser: 'ADMIN',
+      servers: ['appserver-t4w2x'],
+      debuggeeServer: 'appserver-rpsxx',
+    });
+    const { result, json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'none' });
+
+    expect(result.isError).toBeFalsy();
+    expect(json).toMatchObject({ hit: true, attached: false, debuggee: { server: 'appserver-rpsxx' } });
+    expect(json?.error).toContain('(invalidDebuggee)');
+    expect(json?.error).toContain(
+      "SAP attaches only from the debuggee's application server (appserver-rpsxx), and none of 8 new sessions landed there (the last on appserver-t4w2x)",
+    );
+    // Not attached = nothing to release: no stepContinue, no "released" claim.
+    expect(json?.release).toBeUndefined();
+    expect(calls.filter((c) => c.query.get('method') === 'attach')).toHaveLength(1);
+    expect(calls.some((c) => c.query.get('method') === 'stepContinue')).toBe(false);
+    // Every session ARC-1 opened is ended again: two ahead of the run, eight after the stop.
+    expect(calls.filter((c) => c.sessionType === 'stateless')).toHaveLength(10);
+    expect(named(calls, 'DELETE', '/sap/bc/adt/debugger/listeners')).toHaveLength(1);
+  });
+});
+
+describe('SAPDiagnose action="debug" — a debuggee SAP cannot attach', () => {
+  it('ends the session that waited for it', async () => {
+    const { calls } = installFakeSap({
+      hit: true,
+      attachImpossible: true,
+      sessionUser: 'ADMIN',
+      servers: ['appserver-t4w2x', 'appserver-rpsxx'],
+    });
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 });
+
+    expect(json).toMatchObject({ hit: true, attached: false, debuggee: { server: 'appserver-t4w2x' } });
+    expect(json?.error).toContain('IS_ATTACH_IMPOSSIBLE');
+    expect(calls.some((c) => c.query.get('method') === 'attach')).toBe(false);
+    // Both sessions opened ahead of the run end — the one waiting on the debuggee's server included.
+    expect(
+      calls
+        .filter((c) => c.sessionType === 'stateless')
+        .map((c) => c.server)
+        .sort(),
+    ).toEqual(['appserver-rpsxx', 'appserver-t4w2x']);
   });
 });
 
@@ -468,7 +639,11 @@ describe('SAPDiagnose action="debug" — whose run is caught', () => {
     const { calls } = installFakeSap({ hit: false });
     const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 });
     expect(json?.user).toBe('ADMIN');
-    expect(named(calls, 'GET', '/sap/bc/adt/core/http/systeminformation')).toHaveLength(1);
+    // The stateless "who am I" finds no resource; so does the one probe ahead of the run, which then stops.
+    expect(named(calls, 'GET', '/sap/bc/adt/core/http/systeminformation').map((c) => c.stateful)).toEqual([
+      false,
+      true,
+    ]);
   });
 
   it('caps parallel captures per instance at a quarter of ARC1_MAX_CONCURRENT', async () => {
