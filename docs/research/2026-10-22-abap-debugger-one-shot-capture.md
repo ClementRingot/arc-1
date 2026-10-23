@@ -316,11 +316,12 @@ trigger ran side by side (7). It took the §3.6 fix: before it, every attach fai
 ~75 s after re-activating the class, three line breakpoints on the freshly added method did not stop
 although the unit tests ran (no stop at all, not a refused attach) — consistent with the new version
 reaching the other application server late (buffer sync, `rdisp/bufreftime`) but not reproduced after a
-later activation, so the hint only suggests waiting a minute. `trigger=http` cannot be tested on the
-trial: a custom OData V4 service answers 403 "blocked by UCON" until it is exposed through an IAM app or
-communication scenario, which trial users cannot configure; the capture reports `trigger failed` with
-its own hint. Still owed on BTP: `trigger=http` where the service is exposed, and a run long enough to
-probe the poll timeout under PP (11).
+later activation, so the hint only suggests waiting a minute. `trigger=http` works as well: a line
+breakpoint in the query provider of a custom entity, behind a freshly published OData V4 UI binding,
+stopped under the SADL / Gateway V4 stack, with the request and response objects readable. For the
+first minutes after the publish (which itself outlasted ARC-1's request timeout) the service answered
+403 "blocked by UCON"; such a capture reports `trigger failed` with its own hint. Still owed on BTP: a
+run long enough to probe the poll timeout under PP (11).
 
 1. 758 + 816: `trigger=unittest` on a class with a line breakpoint → `hit:true`, stack top = the line,
    locals present; verify the `@ROOT` scope names (`CHILD_NAME`) and that the walk returns values.
