@@ -104,6 +104,8 @@ interface FakeSapOptions {
   runByUser?: boolean;
   /** SAP flags the stopped debuggee IS_ATTACH_IMPOSSIBLE. */
   attachImpossible?: boolean;
+  /** The OData service refuses the trigger (BTP ABAP: UCON blocks an unexposed custom service). */
+  odataBlocked?: boolean;
 }
 
 const cannotAttach = (line: number) =>
@@ -300,6 +302,9 @@ function installFakeSap(options: FakeSapOptions = {}) {
           return mockResponse(200, asx(values.join('')));
         }
       }
+    }
+    if (path.startsWith('/sap/opu/odata4/') && options.odataBlocked) {
+      return mockResponse(403, 'Application Server Error: The request has been blocked by UCON.');
     }
     if (path.startsWith('/sap/opu/odata4/')) {
       if (options.hit && options.servers) stoppedOn = call.server ?? options.debuggeeServer;
@@ -767,5 +772,20 @@ describe('SAPDiagnose action="debug" — gates and input', () => {
     expect(get?.method).toBe('GET');
     expect(get?.query.get('$top')).toBe('1');
     expect(named(calls, 'POST', '/sap/bc/adt/abapunit/testruns')).toHaveLength(0);
+  });
+
+  it('says the trigger itself failed when the OData service refuses the call', async () => {
+    const { calls } = installFakeSap({ hit: false, odataBlocked: true });
+    const url = '/sap/opu/odata4/sap/zui_travel/srvd/sap/ztravel/0001/Travel';
+    const { result, json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'http', url });
+    expect(result.isError).toBeFalsy();
+    expect(json?.reason).toMatch(/^trigger failed: .*403.*blocked by UCON/);
+    expect(json?.trigger).toMatchObject({ kind: 'http', status: 'failed' });
+    expect(json?.hint).toContain('The trigger request itself failed');
+    expect(json?.hint).toContain('odata_perf');
+    expect(json?.hint).not.toContain('finished without reaching the breakpoint');
+    // Cleanup as always.
+    expect(named(calls, 'DELETE', '/sap/bc/adt/debugger/breakpoints/BP-L9')).toHaveLength(1);
+    expect(named(calls, 'DELETE', '/sap/bc/adt/debugger/listeners')).toHaveLength(1);
   });
 });

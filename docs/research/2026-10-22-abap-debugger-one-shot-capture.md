@@ -309,9 +309,18 @@ session user is the internal `CB99…` user (10); a listening Eclipse is refused
 text and nothing is armed (4); a line breakpoint in a class method is hit, with stack, named locals
 and three `stepOver`s with changing values, then released by `stepContinue` with the unit test
 passing (1, BTP only); an exception breakpoint (`CX_SY_ZERODIVIDE`, caught) stops where it is
-raised; the long poll and trigger ran side by side (7). It took the §3.6 fix: before it, every attach
-failed with `invalidDebuggee`. Still owed on BTP: `trigger=http`, and a run long
-enough to probe the poll timeout under PP (11).
+raised; structures, table rows and structure components across steps read back; the long poll and
+trigger ran side by side (7). It took the §3.6 fix: before it, every attach failed with
+`invalidDebuggee`. Also seen there: the application servers are pods whose names change over time
+(`appserver-t4w2x`/`-rpsxx`, later `-w4krn`), which the runtime discovery absorbs; and once, in the
+~75 s after re-activating the class, three line breakpoints on the freshly added method did not stop
+although the unit tests ran (no stop at all, not a refused attach) — consistent with the new version
+reaching the other application server late (buffer sync, `rdisp/bufreftime`) but not reproduced after a
+later activation, so the hint only suggests waiting a minute. `trigger=http` cannot be tested on the
+trial: a custom OData V4 service answers 403 "blocked by UCON" until it is exposed through an IAM app or
+communication scenario, which trial users cannot configure; the capture reports `trigger failed` with
+its own hint. Still owed on BTP: `trigger=http` where the service is exposed, and a run long enough to
+probe the poll timeout under PP (11).
 
 1. 758 + 816: `trigger=unittest` on a class with a line breakpoint → `hit:true`, stack top = the line,
    locals present; verify the `@ROOT` scope names (`CHILD_NAME`) and that the walk returns values.
