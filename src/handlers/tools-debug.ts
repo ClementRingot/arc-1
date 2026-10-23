@@ -11,27 +11,38 @@ export function isDebugActionVisible(config: Pick<ServerConfig, 'allowDebug' | '
 }
 
 export const SAPDIAGNOSE_DEBUG_DESCRIPTION =
-  '- "debug": one-shot debugger capture: breakpoint (type+name+line|method, and/or exceptionClass) → trigger → stack + variables at the stop (+steps) → released; nothing stays stopped, so request every variable up front. line: 1-based, as SAPRead numbers it; timeoutSeconds: wait for the hit (60, max 240).\n';
+  '- "debug": capture ONE run (breakpoints/line/exceptionClass, trigger): stack+variables(+steps) per stop, released; list variables up front. line: 1-based; timeoutSeconds: first-hit wait (60, max 240).\n';
 
 export const SAPDIAGNOSE_DEBUG_PROPERTIES: Record<string, unknown> = {
-  method: { type: 'string', description: 'debug: CLAS method instead of line (get_total, lhc_x~check).' },
-  include: {
-    type: 'string',
-    enum: ['implementations', 'testclasses'],
-    description: 'debug: CLAS include of line (auto for lhc_/lcl_/ltc_ methods).',
+  breakpoints: {
+    type: 'array',
+    items: {
+      type: 'object',
+      properties: {
+        type: { type: 'string' },
+        name: { type: 'string' },
+        line: { type: 'number' },
+        method: { type: 'string' },
+        include: { type: 'string' },
+        hits: { type: 'number' },
+      },
+    },
+    description:
+      'debug: stops (max 6): line|method (CLAS: lhc_x~check), include (implementations|testclasses, else auto), hits (1-10); type/name default to top-level.',
   },
-  exceptionClass: { type: 'string', description: 'debug: stop where this exception class is raised.' },
+  exceptionClass: { type: 'string', description: 'debug: stop when this exception is raised.' },
   trigger: {
     type: 'string',
     enum: ['unittest', 'http', 'none'],
     description:
-      'debug: unittest (default; harmless ABAP Unit of triggerName, else the breakpoint object), http (GET url), none (you run it as the same SAP user).',
+      'debug: unittest (default: ABAP Unit of triggerName or breakpoint object), http (GET url), none (user runs it, same SAP user).',
   },
-  triggerName: { type: 'string', description: 'debug: unit-test CLAS/PROG/FUGR, if not the breakpoint object.' },
+  triggerName: { type: 'string', description: 'debug: unit-test CLAS/PROG/FUGR (else breakpoint object).' },
   variables: {
     type: 'array',
     items: { type: 'string' },
-    description: 'debug: read at the stop and per step (LV_X, LS_S-F, LT_T, ME->MV_A); default: frame variables.',
+    description: 'debug: read per stop/step (LV_X, LS_S-F, ME->MV_A); default: locals.',
   },
-  steps: { type: 'number', description: 'debug: stepOver count after the stop (0-20).' },
+  steps: { type: 'number', description: 'debug: steps per stop (0-20).' },
+  stepMode: { type: 'string', enum: ['over', 'into', 'out'], description: 'debug: step kind (default over).' },
 };

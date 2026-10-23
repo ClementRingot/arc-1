@@ -241,7 +241,7 @@ describe('multi-target tool surface', () => {
       (tool) => tool.name === 'SAPDiagnose',
     );
     expect(property(diagnose as ToolDefinition, 'action').enum).not.toContain('debug');
-    for (const name of ['method', 'include', 'exceptionClass', 'trigger', 'triggerName', 'variables', 'steps']) {
+    for (const name of ['breakpoints', 'exceptionClass', 'trigger', 'triggerName', 'variables', 'steps', 'stepMode']) {
       expect(Object.keys(diagnose?.inputSchema.properties as object)).not.toContain(name);
     }
   });

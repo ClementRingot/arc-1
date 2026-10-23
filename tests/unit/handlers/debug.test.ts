@@ -37,9 +37,29 @@ const AUNIT_PASSED = `<?xml version="1.0" encoding="utf-8"?><aunit:runResult xml
 
 const ENDED = `<?xml version="1.0" encoding="utf-8"?><exc:exception xmlns:exc="http://www.sap.com/abapxml/types/communicationframework"><type id="ExceptionResourceFailure"/><message lang="EN">Debuggee ended</message><properties><entry key="com.sap.adt.communicationFramework.subType">debuggeeEnded</entry></properties></exc:exception>`;
 
-function stackXml(line: number): string {
-  return `<?xml version="1.0" encoding="utf-8"?><dbg:stack xmlns:dbg="http://www.sap.com/adt/debugger"><stackEntry stackPosition="2" programName="ZCL_ORDER=====================CP" includeName="ZCL_ORDER=====================CM001" line="${line - 6}" eventType="METHOD" eventName="GET_TOTAL" systemProgram="false" uri="/sap/bc/adt/oo/classes/zcl_order/source/main#start=${line},4"/><stackEntry stackPosition="1" programName="SAPLSAUNIT_TEST_RUNNER" includeName="LSAUNIT_TEST_RUNNERU01" line="7" eventType="FUNCTION" eventName="SAUNIT_RUN" systemProgram="true"/></dbg:stack>`;
+const MAIN = '/sap/bc/adt/oo/classes/zcl_order/source/main';
+const REPORT = '/sap/bc/adt/programs/programs/zreport/source/main';
+
+/** A source position the fake program passes: the source path and its line. */
+interface Position {
+  path: string;
+  line: number;
 }
+
+/** `withUri: false` — SAP leaves the frame's uri out, so only reachedBreakpoints can name the stop. */
+function stackXml(at: Position, withUri = true): string {
+  const uri = (column: number) => (withUri ? ` uri="${at.path}#start=${at.line},${column}"` : '');
+  const top =
+    at.path === MAIN
+      ? `<stackEntry stackPosition="2" programName="ZCL_ORDER=====================CP" includeName="ZCL_ORDER=====================CM001" line="${at.line - 6}" eventType="METHOD" eventName="GET_TOTAL" systemProgram="false"${uri(4)}/>`
+      : `<stackEntry stackPosition="2" programName="ZREPORT" includeName="ZREPORT" line="${at.line}" eventType="EVENT" eventName="START-OF-SELECTION" systemProgram="false"${uri(1)}/>`;
+  return `<?xml version="1.0" encoding="utf-8"?><dbg:stack xmlns:dbg="http://www.sap.com/adt/debugger">${top}<stackEntry stackPosition="1" programName="SAPLSAUNIT_TEST_RUNNER" includeName="LSAUNIT_TEST_RUNNERU01" line="7" eventType="FUNCTION" eventName="SAUNIT_RUN" systemProgram="true"/></dbg:stack>`;
+}
+
+/** SAP's breakpoint id for a position: location-derived, so the external breakpoint and its session copy share it. */
+const breakpointId = (path: string, line: number) =>
+  path === MAIN ? `BP-L${line}` : `BP-${path.split('/').at(-3)?.toUpperCase()}-L${line}`;
+const positionKey = (path: string, line: number) => `${path}#${line}`;
 
 function variable(id: string, metaType: string, value = '', extra = ''): string {
   return `<STPDA_ADT_VARIABLE><ID>${id}</ID><NAME>${id.replace(/^.*[-]/, '')}</NAME><DECLARED_TYPE_NAME>T_${metaType.toUpperCase()}</DECLARED_TYPE_NAME><META_TYPE>${metaType}</META_TYPE><VALUE>${value}</VALUE>${extra}</STPDA_ADT_VARIABLE>`;
@@ -106,6 +126,14 @@ interface FakeSapOptions {
   attachImpossible?: boolean;
   /** The OData service refuses the trigger (BTP ABAP: UCON blocks an unexposed custom service). */
   odataBlocked?: boolean;
+  /** The positions the run passes, in order (a loop repeats one). It stops at the first one with an armed
+   *  breakpoint; `stepContinue` runs on to the next one with a session breakpoint, or to the end. Unset: the
+   *  run stops once at line 9 of ZCL_ORDER and `stepContinue` ends it. */
+  execution?: Position[];
+  /** attach / stepContinue answers name the breakpoint reached (reachedBreakpoints). */
+  namesBreakpoints?: boolean;
+  /** Stack frames carry no uri. */
+  stackWithoutUri?: boolean;
 }
 
 const cannotAttach = (line: number) =>
@@ -118,7 +146,12 @@ const cannotAttach = (line: number) =>
 
 function installFakeSap(options: FakeSapOptions = {}) {
   const calls: Call[] = [];
-  let currentLine = 9;
+  /** Where the debuggee stands; steps move it a line on. */
+  let position: Position = { path: MAIN, line: 9 };
+  let cursor = 0;
+  /** Armed breakpoints by position → id: the user's external ones, and the attached run's own copies. */
+  const external = new Map<string, string>();
+  let sessionBreakpoints = new Map<string, string>();
   let released: () => void = () => {};
   const releasedPromise = new Promise<void>((resolve) => {
     released = resolve;
@@ -210,6 +243,10 @@ function installFakeSap(options: FakeSapOptions = {}) {
       if (options.hit) {
         if (options.runByUser) stoppedOn = options.servers ? options.debuggeeServer : undefined;
         else await triggeredPromise;
+        if (options.execution) {
+          cursor = options.execution.findIndex((at) => external.has(positionKey(at.path, at.line)));
+          position = { ...(options.execution[cursor] as Position) };
+        }
         return mockResponse(200, debuggeeXml());
       }
       if (options.listenerTimesOut) return mockResponse(200, '');
@@ -226,32 +263,47 @@ function installFakeSap(options: FakeSapOptions = {}) {
           ENDED.replace('debuggeeEnded', 'notAuthorized').replace('Debuggee ended', 'No authorization to debug'),
         );
       }
-      if (body.includes('scope="debugger"'))
-        return mockResponse(200, '<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger"/>');
-      const items = [...body.matchAll(/clientId="arc1-line-(\d+)"/g)].map((m) => {
-        const line = Number(m[1]);
-        return line >= (options.acceptLinesFrom ?? 1)
-          ? `<breakpoint kind="line" clientId="arc1-line-${line}" id="BP-L${line}" adtcore:uri="/sap/bc/adt/oo/classes/zcl_order/source/main#start=${line}"/>`
-          : `<breakpoint kind="line" clientId="arc1-line-${line}" errorMessage="Cannot create a breakpoint at this position"/>`;
+      // A full sync replaces the scope's set: the user's external breakpoints, or the attached run's copies.
+      const armed = new Map<string, string>();
+      const items = [
+        ...body.matchAll(/kind="line" clientId="([^"]+)" skipCount="0" adtcore:uri="([^"#]+)#start=(\d+)"/g),
+      ].map((m) => {
+        const [, clientId, path = '', text] = m;
+        const line = Number(text);
+        if (line < (options.acceptLinesFrom ?? 1))
+          return `<breakpoint kind="line" clientId="${clientId}" errorMessage="Cannot create a breakpoint at this position"/>`;
+        armed.set(positionKey(path, line), breakpointId(path, line));
+        return `<breakpoint kind="line" clientId="${clientId}" id="${breakpointId(path, line)}" adtcore:uri="${path}#start=${line}"/>`;
       });
       if (body.includes('kind="exception"')) {
         items.push(
           '<breakpoint kind="exception" clientId="arc1-exception" id="BP-EXC" exceptionClass="CX_SY_ZERODIVIDE"/>',
         );
       }
+      if (body.includes('scope="debugger"')) {
+        sessionBreakpoints = armed;
+        return mockResponse(200, '<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger"/>');
+      }
+      external.clear();
+      for (const [key, id] of armed) external.set(key, id);
       return mockResponse(
         200,
         `<dbg:breakpoints xmlns:dbg="http://www.sap.com/adt/debugger" xmlns:adtcore="http://www.sap.com/adt/core">${items.join('')}</dbg:breakpoints>`,
       );
     }
-    if (path.startsWith('/sap/bc/adt/debugger/breakpoints/') && method === 'DELETE') return mockResponse(200, '');
+    if (path.startsWith('/sap/bc/adt/debugger/breakpoints/') && method === 'DELETE') {
+      const id = decodeURIComponent(call.path.split('/').at(-1) ?? '');
+      const scope = q.get('scope') === 'debugger' ? sessionBreakpoints : external;
+      for (const [key, value] of scope) if (value === id) scope.delete(key);
+      return mockResponse(200, '');
+    }
     if (path === '/sap/bc/adt/abapunit/testruns') {
       if (options.hit && options.servers) stoppedOn = call.server ?? options.debuggeeServer;
       triggered();
       if (options.hit) await releasedPromise;
       return mockResponse(200, AUNIT_PASSED);
     }
-    if (path === '/sap/bc/adt/debugger/stack') return mockResponse(200, stackXml(currentLine));
+    if (path === '/sap/bc/adt/debugger/stack') return mockResponse(200, stackXml(position, !options.stackWithoutUri));
     if (path === '/sap/bc/adt/debugger') {
       switch (q.get('method')) {
         case 'attach':
@@ -261,14 +313,28 @@ function installFakeSap(options: FakeSapOptions = {}) {
             released(); // SAP lets the unattached debuggee run on once its wait times out
             return mockResponse(500, cannotAttach(line));
           }
+          // The attached run gets its own copies of the breakpoints armed when it stopped.
+          sessionBreakpoints = new Map(external);
           return mockResponse(
             200,
-            '<dbg:attach xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true"/>',
+            `<dbg:attach xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true">${reached()}</dbg:attach>`,
           );
         case 'stepOver':
-          currentLine++;
+        case 'stepInto':
+        case 'stepReturn':
+          position = { ...position, line: position.line + 1 };
           return mockResponse(200, '<dbg:step xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true"/>');
         case 'stepContinue':
+          for (cursor++; options.execution && cursor < options.execution.length; cursor++) {
+            const next = options.execution[cursor] as Position;
+            if (sessionBreakpoints.has(positionKey(next.path, next.line))) {
+              position = { ...next };
+              return mockResponse(
+                200,
+                `<dbg:step xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true">${reached()}</dbg:step>`,
+              );
+            }
+          }
           released();
           stoppedOn = undefined;
           return mockResponse(400, ENDED);
@@ -294,7 +360,7 @@ function installFakeSap(options: FakeSapOptions = {}) {
           const ids = [...body.matchAll(/<ID>([^<]+)<\/ID>/g)].map((m) => (m[1] as string).replace('ME-&gt;', 'ME->'));
           const values = ids.flatMap((id) =>
             id === 'LV_TOTAL'
-              ? [variable('LV_TOTAL', 'simple', String(30 + currentLine))]
+              ? [variable('LV_TOTAL', 'simple', String(30 + position.line))]
               : VARIABLES[id]
                 ? [VARIABLES[id]]
                 : [],
@@ -318,6 +384,14 @@ function installFakeSap(options: FakeSapOptions = {}) {
       );
     }
     return mockResponse(404, `unexpected ${method} ${parsed.pathname}${parsed.search}`);
+  }
+
+  /** `<reachedBreakpoints>` naming the session breakpoint at the current position, when SAP names it. */
+  function reached(): string {
+    const id = sessionBreakpoints.get(positionKey(position.path, position.line));
+    return options.namesBreakpoints && id
+      ? `<reachedBreakpoints><breakpoint id="${id}" kind="line"/></reachedBreakpoints>`
+      : '';
   }
   return { calls };
 }
@@ -348,7 +422,7 @@ afterEach(() => {
 describe('SAPDiagnose action="debug" — a hit', () => {
   it('stops in a method, returns stack + frame variables, then releases and cleans up', async () => {
     const { calls } = installFakeSap({ hit: true, acceptLinesFrom: 9 });
-    const { result, json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', method: 'get_total' });
+    const { result, json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', breakpoints: [{ method: 'get_total' }] });
 
     expect(result.isError).toBeFalsy();
     expect(json).toMatchObject({
@@ -356,15 +430,22 @@ describe('SAPDiagnose action="debug" — a hit', () => {
       user: 'ADMIN',
       attached: true,
       breakpoints: [
-        { kind: 'line', status: 'set', line: 9, uri: '/sap/bc/adt/oo/classes/zcl_order/source/main#start=9' },
+        { kind: 'line', status: 'set', line: 9, uri: '/sap/bc/adt/oo/classes/zcl_order/source/main#start=9', hits: 1 },
       ],
-      stoppedAt: { procedure: 'METHOD GET_TOTAL', line: 3 },
-      hiddenSystemFrames: 1,
+      stops: [
+        {
+          stop: 1,
+          at: 'CLAS ZCL_ORDER method get_total',
+          stoppedAt: { procedure: 'METHOD GET_TOTAL', line: 3 },
+          hiddenSystemFrames: 1,
+        },
+      ],
       release: { released: true, via: 'continue' },
       trigger: { kind: 'unittest', target: 'ABAP Unit CLAS ZCL_ORDER', status: 'completed' },
     });
-    expect(json?.stack).toHaveLength(1);
-    expect(json?.variables).toEqual([
+    expect(json?.stops).toHaveLength(1);
+    expect(json?.stops[0].stack).toHaveLength(1);
+    expect(json?.stops[0].variables).toEqual([
       { name: 'LV_TOTAL', scope: 'Locals', type: 'T_SIMPLE', kind: 'simple', value: '42' },
       {
         name: 'LS_HEAD',
@@ -381,8 +462,8 @@ describe('SAPDiagnose action="debug" — a hit', () => {
       c.body.includes('scope="external"'),
     );
     expect(syncs).toHaveLength(2);
-    expect([...syncs[0]!.body.matchAll(/arc1-line-(\d+)/g)].map((m) => m[1])).toEqual(['7', '8', '9', '10', '11']);
-    expect([...syncs[1]!.body.matchAll(/arc1-line-(\d+)/g)].map((m) => m[1])).toEqual(['9']);
+    expect([...syncs[0]!.body.matchAll(/arc1-0-line-(\d+)/g)].map((m) => m[1])).toEqual(['7', '8', '9', '10', '11']);
+    expect([...syncs[1]!.body.matchAll(/arc1-0-line-(\d+)/g)].map((m) => m[1])).toEqual(['9']);
     expect(syncs[0]!.body).toContain('requestUser="ADMIN"');
 
     // Listener + breakpoints stateless; attach/stack/variables/release on one stateful session.
@@ -417,7 +498,7 @@ describe('SAPDiagnose action="debug" — a hit', () => {
       steps: 2,
     });
     expect(json?.hit).toBe(true);
-    expect(json?.variables).toEqual([
+    expect(json?.stops[0].variables).toEqual([
       { name: 'LV_TOTAL', type: 'T_SIMPLE', kind: 'simple', value: '39' },
       {
         name: 'LT_ITEMS',
@@ -428,7 +509,7 @@ describe('SAPDiagnose action="debug" — a hit', () => {
       },
       { name: 'LV_NOPE', kind: 'unknown', error: 'not visible in the stopped frame' },
     ]);
-    expect(json?.steps).toEqual([
+    expect(json?.stops[0].steps).toEqual([
       expect.objectContaining({ step: 1, line: 4, values: { LV_TOTAL: '40', LT_ITEMS: 'table[2]' } }),
       expect.objectContaining({ step: 2, line: 5, values: { LV_TOTAL: '41', LT_ITEMS: 'table[2]' } }),
     ]);
@@ -447,7 +528,7 @@ describe('SAPDiagnose action="debug" — a hit', () => {
       hit: true,
       attached: true,
       debuggee: { server: 'appserver-t4w2x' },
-      variables: [{ name: 'LV_TOTAL', value: '39' }],
+      stops: [{ variables: [{ name: 'LV_TOTAL', value: '39' }] }],
       release: { released: true, via: 'continue' },
       trigger: { status: 'completed', server: 'appserver-t4w2x' },
     });
@@ -496,7 +577,7 @@ describe('SAPDiagnose action="debug" — a hit', () => {
   it('shows a structure watched across steps by its components', async () => {
     installFakeSap({ hit: true });
     const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, variables: ['LS_HEAD'], steps: 1 });
-    expect(json?.steps).toEqual([
+    expect(json?.stops[0].steps).toEqual([
       expect.objectContaining({ step: 1, values: { LS_HEAD: { VBELN: '0000004711', KUNNR: 'CUST01' } } }),
     ]);
   });
@@ -509,6 +590,201 @@ describe('SAPDiagnose action="debug" — a hit', () => {
     expect(second.result.isError).toBe(true);
     expect(second.text).toContain('already running');
     expect((await first).json?.hit).toBe(true);
+  });
+});
+
+describe('SAPDiagnose action="debug" — several stops in one run', () => {
+  const at9 = { path: MAIN, line: 9 };
+  const at11 = { path: MAIN, line: 11 };
+  const line9 = 'CLAS ZCL_ORDER the main source line 9';
+  const line11 = 'CLAS ZCL_ORDER the main source line 11';
+  const method = (calls: Call[], name: string) => calls.filter((c) => c.query.get('method') === name);
+
+  it('follows the run from one breakpoint to the next, retiring each after its stop', async () => {
+    const { calls } = installFakeSap({ hit: true, execution: [at9, at11] });
+    const { result, json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: [{ line: 9 }, { line: 11 }],
+      variables: ['LV_TOTAL'],
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(json?.breakpoints).toEqual([
+      expect.objectContaining({ location: line9, status: 'set', line: 9, hits: 1 }),
+      expect.objectContaining({ location: line11, status: 'set', line: 11, hits: 1 }),
+    ]);
+    expect(json?.stops).toEqual([
+      expect.objectContaining({
+        stop: 1,
+        at: line9,
+        stoppedAt: expect.objectContaining({ uri: `${MAIN}#start=9,4` }),
+        variables: [expect.objectContaining({ name: 'LV_TOTAL', value: '39' })],
+      }),
+      expect.objectContaining({
+        stop: 2,
+        at: line11,
+        stoppedAt: expect.objectContaining({ uri: `${MAIN}#start=11,4` }),
+        variables: [expect.objectContaining({ name: 'LV_TOTAL', value: '41' })],
+      }),
+    ]);
+    // Each breakpoint shows the call stack on its first stop.
+    expect(json?.stops[1].stack).toHaveLength(1);
+    expect(json?.release).toEqual({ released: true, via: 'continue' });
+    // Line 9 left the run (its session copy, on the attached session) before the run went on to 11.
+    const retired = calls.filter((c) => c.method === 'DELETE' && c.query.get('scope') === 'debugger');
+    expect(retired.map((c) => c.path)).toEqual(['/sap/bc/adt/debugger/breakpoints/BP-L9']);
+    expect(retired.every((c) => c.stateful)).toBe(true);
+    // One continue to the second stop, one to release the run after it.
+    expect(method(calls, 'stepContinue')).toHaveLength(2);
+    // Both locations were probed in one POST, under their own client ids.
+    const probe = named(calls, 'POST', '/sap/bc/adt/debugger/breakpoints')[0]!;
+    expect(probe.body).toContain('clientId="arc1-0-line-9"');
+    expect(probe.body).toContain('clientId="arc1-1-line-11"');
+  });
+
+  it('stops at a loop breakpoint as often as its hits allow, then runs on to the next one', async () => {
+    const loop = Array.from({ length: 5 }, () => at9);
+    installFakeSap({ hit: true, execution: [...loop, at11] });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: [{ line: 9, hits: 3 }, { line: 11 }],
+      variables: ['LV_TOTAL'],
+    });
+
+    expect(json?.stops.map((stop: Record<string, unknown>) => [stop.at, stop.hit ?? null])).toEqual([
+      [line9, 1],
+      [line9, 2],
+      [line9, 3],
+      [line11, null],
+    ]);
+    // A loop's later stops would only repeat the call stack.
+    expect(json?.stops.map((stop: Record<string, unknown>) => 'stack' in stop)).toEqual([true, false, false, true]);
+    expect(json?.breakpoints.map((bp: Record<string, unknown>) => bp.hits)).toEqual([3, 1]);
+  });
+
+  it('records at most 10 stops, then lets the run go on', async () => {
+    const loop = Array.from({ length: 12 }, () => at9);
+    installFakeSap({ hit: true, execution: [...loop, at11] });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: [{ line: 9, hits: 10 }, { line: 11 }],
+      variables: ['LV_TOTAL'],
+    });
+
+    expect(json?.stops).toHaveLength(10);
+    expect(json?.warnings).toContainEqual(expect.stringContaining('at most 10 stops'));
+    expect(json?.breakpoints.map((bp: Record<string, unknown>) => bp.hits)).toEqual([10, 0]);
+    expect(json?.release).toMatchObject({ released: true, via: 'continue' });
+  });
+
+  it('reports a breakpoint the run never reached and needs no release once the run ended', async () => {
+    const { calls } = installFakeSap({ hit: true, execution: [at9] });
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', breakpoints: [{ line: 9 }, { line: 11 }] });
+
+    expect(json?.stops).toHaveLength(1);
+    expect(json?.breakpoints.map((bp: Record<string, unknown>) => bp.hits)).toEqual([1, 0]);
+    expect(json?.release).toEqual({ released: true, via: 'continue' });
+    // The continue toward line 11 ran the program to its end: nothing left to release.
+    expect(method(calls, 'stepContinue')).toHaveLength(1);
+    expect(calls.some((c) => c.method === 'POST' && c.body.includes('scope="debugger"'))).toBe(false);
+  });
+
+  it('stops in another object of the same run', async () => {
+    installFakeSap({ hit: true, execution: [at9, { path: REPORT, line: 30 }] });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: [{ line: 9 }, { type: 'PROG', name: 'zreport', line: 30 }],
+    });
+
+    expect(json?.breakpoints[1]).toMatchObject({
+      location: 'PROG ZREPORT line 30',
+      status: 'set',
+      uri: `${REPORT}#start=30`,
+      hits: 1,
+    });
+    expect(json?.stops.map((stop: Record<string, unknown>) => stop.at)).toEqual([line9, 'PROG ZREPORT line 30']);
+    expect(json?.stops[1].stoppedAt).toMatchObject({ program: 'ZREPORT', line: 30 });
+    // The unit tests of the top-level object still run the code.
+    expect(json?.trigger).toMatchObject({ target: 'ABAP Unit CLAS ZCL_ORDER' });
+  });
+
+  it('names a stop by the breakpoint SAP reports when the stack carries no position', async () => {
+    installFakeSap({ hit: true, namesBreakpoints: true, stackWithoutUri: true, execution: [at9, at11] });
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', breakpoints: [{ line: 9 }, { line: 11 }] });
+    expect(json?.stops.map((stop: Record<string, unknown>) => stop.at)).toEqual([line9, line11]);
+  });
+
+  it('leaves a stop it cannot place unnamed and keeps following the run', async () => {
+    installFakeSap({ hit: true, stackWithoutUri: true, execution: [at9, at11] });
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', breakpoints: [{ line: 9 }, { line: 11 }] });
+    expect(json?.stops).toHaveLength(2);
+    expect(json?.stops.some((stop: Record<string, unknown>) => 'at' in stop)).toBe(false);
+    expect(json?.breakpoints.map((bp: Record<string, unknown>) => bp.hits)).toEqual([0, 0]);
+  });
+
+  it('reports two locations on the same line once', async () => {
+    installFakeSap({ hit: true, acceptLinesFrom: 9 });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: [{ line: 9 }, { method: 'get_total' }],
+    });
+    expect(json?.breakpoints).toEqual([
+      expect.objectContaining({ location: line9, status: 'set', line: 9, hits: 1 }),
+      { kind: 'line', location: 'CLAS ZCL_ORDER method get_total', status: 'duplicate', of: line9 },
+    ]);
+    expect(json?.stops).toHaveLength(1);
+  });
+
+  it('steps into calls or out to the caller as stepMode says', async () => {
+    const into = installFakeSap({ hit: true });
+    const stepped = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, steps: 2, stepMode: 'into' });
+    expect(stepped.json?.stops[0].steps).toHaveLength(2);
+    expect(method(into.calls, 'stepInto')).toHaveLength(2);
+    expect(method(into.calls, 'stepOver')).toHaveLength(0);
+
+    const out = installFakeSap({ hit: true });
+    await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, steps: 1, stepMode: 'out' });
+    expect(method(out.calls, 'stepReturn')).toHaveLength(1);
+  });
+
+  it('records at most 40 steps across all stops', async () => {
+    installFakeSap({ hit: true, execution: [at9, at9, at9] });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: [{ line: 9, hits: 3 }],
+      steps: 20,
+      variables: ['LV_TOTAL'],
+    });
+    expect(
+      json?.stops.map((stop: Record<string, unknown>) => (stop.steps as unknown[] | undefined)?.length ?? 0),
+    ).toEqual([20, 20, 0]);
+    expect(json?.warnings).toContainEqual(expect.stringContaining('at most 40 steps'));
+  });
+
+  it('validates each breakpoint before anything reaches SAP', async () => {
+    installFakeSap();
+    const both = await debug({ type: 'CLAS', name: 'ZCL_ORDER', breakpoints: [{ line: 9, method: 'get_total' }] });
+    expect(both.text).toContain('breakpoints[0] needs line or method');
+    const noObject = await debug({ breakpoints: [{ line: 9 }] });
+    expect(noObject.text).toContain('needs type (CLAS, PROG or FUNC) and name');
+    const tooMany = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: Array.from({ length: 7 }, (_, index) => ({ line: index + 1 })),
+    });
+    expect(tooMany.result.isError).toBe(true);
+    const tooManyHits = await debug({ type: 'CLAS', name: 'ZCL_ORDER', breakpoints: [{ line: 9, hits: 11 }] });
+    expect(tooManyHits.result.isError).toBe(true);
+    // The method is a breakpoints item now, not a top-level argument.
+    const topLevelMethod = await debug({ type: 'CLAS', name: 'ZCL_ORDER', method: 'get_total' });
+    expect(topLevelMethod.result.isError).toBe(true);
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });
 
@@ -712,7 +988,7 @@ describe('SAPDiagnose action="debug" — gates and input', () => {
     expect(tooLong.text).toContain('1-240');
     const http = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, trigger: 'http' });
     expect(http.text).toContain('needs url');
-    const methodOnProg = await debug({ type: 'PROG', name: 'ZREPORT', method: 'x' });
+    const methodOnProg = await debug({ type: 'PROG', name: 'ZREPORT', breakpoints: [{ method: 'x' }] });
     expect(methodOnProg.text).toContain('only supported for type="CLAS"');
     const stray = await handleToolCall(createClient(), CONFIG, 'SAPDiagnose', {
       action: 'syntax',

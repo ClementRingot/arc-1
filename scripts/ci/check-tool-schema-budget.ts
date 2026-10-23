@@ -253,10 +253,11 @@ export const TOOL_SCHEMA_SCENARIOS: ToolSchemaScenario[] = [
     resolvedFeatures: ALL_FEATURES_AVAILABLE,
     budget: {
       // The opt-in SAPDiagnose action="debug" in the configuration it needs: read-only plus data
-      // preview (variable values are data). Measured 49,899 bytes / ~12.5k schema tokens / 208
-      // descriptions — ~1.3 KB of debug texts, listed only when an admin enables captures. On top of
-      // the full write surface (74,984 bytes) the same texts would cross the write wall: a maintainer
-      // decision, not covered by a scenario here.
+      // preview (variable values are data). Measured 49,965 bytes / ~12.5k schema tokens / 208
+      // descriptions — ~1.4 KB of debug texts (incl. the multi-stop breakpoints[]/stepMode), listed
+      // only when an admin enables captures; trimmed to stay under the read wall, trim them again (not
+      // the wall) if the surface grows. On top of the full write surface (74,984 bytes) the same texts
+      // would cross the write wall: a maintainer decision, not covered by a scenario here.
       schemaTokenEstimate: 12_600,
       descriptionTokenEstimate: 8_500,
       descriptionCount: 208,
