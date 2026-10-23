@@ -488,9 +488,12 @@ or `C:/arc1/deny-actions.json`). For relative paths, use `./deny-actions.json`, 
 
 ARC-1 fails fast if a deny entry references an unknown tool/action, has invalid grammar, or points to an unreadable file. That is intentional: typoed security config should not silently start.
 
-Use intent-level deny rules (for example `SAPRead.PROG`) when a denial must cover both standard
+Use intent-level deny rules (for example `SAPRead.INCL`) when a denial must cover both standard
 and hyperfocused calls. A rule such as `SAP.read` applies only to the hyperfocused wrapper;
 direct intent calls are checked against the intent tool's rules.
+
+Denying `SAPRead.INCL` also denies include expansion for PROG, INCL and FUGR reads, including
+FUGR `grep` (which implies expansion); plain FUGR metadata reads remain allowed.
 
 ---
 
