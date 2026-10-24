@@ -69,8 +69,6 @@ const MAX_STOPS = 10;
 const MAX_TOTAL_STEPS = 40;
 /** Attach + reads + steps + continues once the debuggee is caught. */
 const INSPECTION_BUDGET_MS = 120_000;
-/** A further `stepContinue` starts only with this much of the inspection budget left. */
-const CONTINUE_MARGIN_MS = 15_000;
 /** Own budget for the release, so an exhausted inspection can never leave a debuggee suspended. */
 const RELEASE_BUDGET_MS = 60_000;
 /** Opening the sessions ahead of the run (a few cheap requests). */
@@ -82,9 +80,11 @@ const timings = {
   armDelayMs: 1500,
   /** How long the capture still waits for the trigger's own answer after the release. */
   triggerSettleMs: 30_000,
+  /** A further step or `stepContinue` starts only with this much of the inspection budget left. */
+  continueMarginMs: 15_000,
 };
 
-/** Shrink the capture's fixed delays in unit tests; the capture semantics do not depend on them. */
+/** Override the capture's fixed delays and margins in unit tests. */
 export function setDebugTimingsForTests(overrides: Partial<typeof timings>): void {
   Object.assign(timings, overrides);
 }
@@ -660,6 +660,9 @@ async function expand(session: DebuggerSession, pairs: Array<{ variable: DebugVa
   }
 }
 
+/** A requested name SAP did not return: the frame read has no such variable. */
+const NOT_VISIBLE = 'not visible in the stopped frame';
+
 async function readNamedVariables(session: DebuggerSession, names: readonly string[]): Promise<CapturedVariable[]> {
   let found: DebugVariable[] = [];
   const failures = new Map<string, string>();
@@ -682,7 +685,7 @@ async function readNamedVariables(session: DebuggerSession, names: readonly stri
     const variable =
       found.find((candidate) => candidate.id.toUpperCase() === name || candidate.name.toUpperCase() === name) ??
       (byPosition ? found[index] : undefined);
-    if (!variable) return { name, kind: 'unknown', error: failures.get(name) ?? 'not visible in the stopped frame' };
+    if (!variable) return { name, kind: 'unknown', error: failures.get(name) ?? NOT_VISIBLE };
     const out = { ...describeVariable(variable), name };
     pairs.push({ variable, out });
     return out;
@@ -757,11 +760,8 @@ function sourcePosition(uri: string): { uri: string; line: number } | undefined 
   return path && Number.isInteger(line) ? { uri: path.toLowerCase(), line } : undefined;
 }
 
-/**
- * The breakpoint a stop belongs to: the one SAP names, else the line breakpoint at the top frame's
- * position, else the only one armed. Undefined = unknown (a `BREAK-POINT` statement, or SAP said nothing usable).
- */
-function breakpointAt(
+/** The armed breakpoint SAP names in `reached`, else the line breakpoint at the top frame's position. */
+function armedAt(
   armed: readonly ArmedBreakpoint[],
   reached: readonly string[],
   top: DebugStackFrame | undefined,
@@ -771,10 +771,82 @@ function breakpointAt(
     if (named) return named;
   }
   const position = top?.uri ? sourcePosition(top.uri) : undefined;
-  const placed = position
+  return position
     ? armed.find((bp) => bp.kind === 'line' && bp.uri === position.uri && bp.line === position.line)
     : undefined;
-  return placed ?? (armed.length === 1 ? armed[0] : undefined);
+}
+
+/**
+ * The breakpoint a stop belongs to: `armedAt`, else the only one armed. Undefined = unknown (a
+ * `BREAK-POINT` statement, or SAP said nothing usable).
+ */
+function breakpointAt(
+  armed: readonly ArmedBreakpoint[],
+  reached: readonly string[],
+  top: DebugStackFrame | undefined,
+): ArmedBreakpoint | undefined {
+  return armedAt(armed, reached, top) ?? (armed.length === 1 ? armed[0] : undefined);
+}
+
+/** The frame the top entry runs in, with the stack depth: a step that changes it entered a call or returned. */
+function frameKey(stack: readonly DebugStackFrame[]): string {
+  const [top] = stack;
+  return top ? [stack.length, top.program, top.include, top.eventType, top.eventName].join('|') : '';
+}
+
+type FrameMove = 'entered' | 'returned' | 'changed';
+
+function frameMove(from: readonly DebugStackFrame[], to: readonly DebugStackFrame[]): FrameMove | undefined {
+  if (frameKey(from) === frameKey(to)) return undefined;
+  if (to.length > from.length) return 'entered';
+  return to.length < from.length ? 'returned' : 'changed';
+}
+
+const FRAME_MOVE_WARNING =
+  'A step with "frame" moved to another method (entered = into a call, returned = back to the caller): its values are read there, so a variable of the same name is a different variable.';
+
+/** A watched variable after a step, as at a stop: its text, a structure's components, or a table's line count and first rows. */
+function stepValue(variable: CapturedVariable): string | Record<string, unknown> {
+  if (variable.kind === 'structure') return variable.components ?? {};
+  if (variable.kind === 'table') {
+    const lines = variable.lines ?? 0;
+    return variable.rows ? { lines, rows: variable.rows } : `table[${lines}]`;
+  }
+  return variable.value ?? '';
+}
+
+/**
+ * The watched variables after a step. A structure or table equal to the previous step's (same frame)
+ * reads `unchanged`. A name SAP refuses is left out of the frame's later reads (`refused`), so one
+ * bad expression cannot fail every step's batch.
+ */
+async function readStepValues(
+  session: DebuggerSession,
+  names: readonly string[],
+  refused: Map<string, string>,
+  previous: Map<string, string>,
+): Promise<Record<string, unknown>> {
+  const read = await readNamedVariables(
+    session,
+    names.filter((name) => !refused.has(name)),
+  );
+  const values: Record<string, unknown> = {};
+  const notVisible: string[] = [];
+  for (const variable of read) {
+    if (variable.error === NOT_VISIBLE) notVisible.push(variable.name);
+    else if (variable.error) refused.set(variable.name, variable.error);
+    else {
+      const value = stepValue(variable);
+      const rendered = typeof value === 'string' ? undefined : JSON.stringify(value);
+      values[variable.name] = rendered !== undefined && previous.get(variable.name) === rendered ? 'unchanged' : value;
+      if (rendered !== undefined) previous.set(variable.name, rendered);
+    }
+  }
+  return {
+    ...(Object.keys(values).length > 0 ? { values } : {}),
+    ...(notVisible.length > 0 ? { notVisible } : {}),
+    ...(refused.size > 0 ? { errors: Object.fromEntries(refused) } : {}),
+  };
 }
 
 interface Inspection {
@@ -791,45 +863,75 @@ interface StepRun {
   /** The program finished during the steps. */
   ended: boolean;
   steppingPossible: boolean;
+  /** A step ran into an armed breakpoint: the run stands at it (`stack`), and the next stop records it. */
+  reached?: { id: string; stack: DebugStackFrame[] };
+  /** The inspection budget ran low: the capture stops following the run. */
+  outOfTime?: true;
 }
 
-/** `count` steps of `stepMode`. `watch`: the requested names readable at the stop — an unknown one would fail every step. */
+/** The armed breakpoint a step stopped at (`move`: how the step changed frame), if any. */
+type StepReach = (
+  reached: readonly string[],
+  top: DebugStackFrame | undefined,
+  move: FrameMove | undefined,
+) => ArmedBreakpoint | undefined;
+
+/**
+ * `count` steps of `req.stepMode` from the stop's frame. After each step every requested variable is
+ * read again — one not visible at the stop too, as a step can enter the method that declares it. A
+ * step that runs into an armed breakpoint (`reach`) ends the steps: the next stop records it.
+ */
 async function runSteps(
   session: DebuggerSession,
-  stepMode: StepMode,
+  req: DebugRequest,
   count: number,
-  watch: readonly string[],
+  from: { stack: DebugStackFrame[]; refused: Map<string, string> },
+  reach: StepReach,
+  deadline: number,
   warnings: string[],
 ): Promise<StepRun> {
   const steps: Array<Record<string, unknown>> = [];
+  let frame = from.stack;
+  const refused = new Map(from.refused);
+  let previous = new Map<string, string>();
   for (let index = 1; index <= count; index++) {
-    const outcome = await session.step(STEP_METHODS[stepMode]);
+    if (deadline - Date.now() < timings.continueMarginMs) {
+      warnings.push(
+        `The ${INSPECTION_BUDGET_MS / 1000}s inspection budget ran low after ${index - 1} step(s) of a stop; the rest of the run went on without stopping.`,
+      );
+      return { steps, ended: false, steppingPossible: true, outOfTime: true };
+    }
+    const outcome = await session.step(STEP_METHODS[req.stepMode]);
     if (outcome.status === 'ended') {
       steps.push({ step: index, ended: true });
       return { steps, ended: true, steppingPossible: false };
     }
-    const [top] = await session.stack();
-    const entry: Record<string, unknown> = { step: index, ...(top ? describeFrame(top) : {}) };
-    if (watch.length > 0) {
-      const values: Record<string, string | Record<string, string>> = {};
+    const stack = await session.stack();
+    const move = frameMove(frame, stack);
+    const entry: Record<string, unknown> = {
+      step: index,
+      ...(stack[0] ? describeFrame(stack[0]) : {}),
+      ...(move ? { frame: move } : {}),
+    };
+    steps.push(entry);
+    const bp = reach(outcome.reachedBreakpoints, stack[0], move);
+    if (bp) {
+      entry.breakpoint = bp.label;
+      return { steps, ended: false, steppingPossible: outcome.steppingPossible, reached: { id: bp.id, stack } };
+    }
+    if (move) {
+      frame = stack;
+      refused.clear();
+      previous = new Map();
+    }
+    if (req.variables.length > 0) {
+      if (move) warnings.push(FRAME_MOVE_WARNING);
       try {
-        const read = await session.variables(watch);
-        // A structure shows its components (one batched read per step), not just "structure".
-        const structures = read.filter((variable) => variable.metaType === 'structure');
-        const components =
-          structures.length > 0
-            ? childrenByParent(await session.childVariables(structures.map((variable) => variable.id)))
-            : undefined;
-        for (const variable of read) {
-          values[variable.id || variable.name] =
-            variable.metaType === 'structure' ? componentsOf(components?.get(variable.id)) : compactValue(variable);
-        }
-        entry.values = values;
+        Object.assign(entry, await readStepValues(session, req.variables, refused, previous));
       } catch (err) {
         entry.valuesError = debuggerErrorText(err);
       }
     }
-    steps.push(entry);
     if (!outcome.steppingPossible) {
       warnings.push(`SAP reports stepping is no longer possible after step ${index}.`);
       return { steps, ended: false, steppingPossible: false };
@@ -841,8 +943,9 @@ async function runSteps(
 /**
  * Follow ONE run from stop to stop: record each stop (position, the call stack on a breakpoint's
  * first stop, variables, steps), retire a breakpoint from the run once it stopped it `maxHits` times,
- * then `stepContinue` to the next stop. Ends when no armed breakpoint is left, the program ends, or a
- * cap is reached — the release then lets the rest of the run go on without stopping.
+ * then `stepContinue` to the next stop — or, when a step ran into a breakpoint, record that stop
+ * where the run already stands. Ends when no armed breakpoint is left, the program ends, or a cap is
+ * reached — the release then lets the rest of the run go on without stopping.
  */
 async function collectStops(
   session: DebuggerSession,
@@ -856,9 +959,19 @@ async function collectStops(
   const remaining = new Set(armed.map((bp) => bp.id));
   const stackShown = new Set<string>();
   let { reachedBreakpoints, steppingPossible } = first;
+  /** The stack a step already read where it ran into a breakpoint: the next stop's. */
+  let reachedStack: DebugStackFrame[] | undefined;
   let stepsLeft = MAX_TOTAL_STEPS;
+  // Back in a caller the top frame stands on the call it returned from, already passed: only SAP's word counts.
+  const reach: StepReach = (reached, top, move) =>
+    armedAt(
+      armed.filter((bp) => remaining.has(bp.id)),
+      reached,
+      move === 'returned' ? undefined : top,
+    );
   for (;;) {
-    const stack = await session.stack();
+    const stack = reachedStack ?? (await session.stack());
+    reachedStack = undefined;
     const at = breakpointAt(armed, reachedBreakpoints, stack[0]);
     const hits = at ? (inspection.hits.get(at.id) ?? 0) + 1 : 0;
     if (at) inspection.hits.set(at.id, hits);
@@ -872,54 +985,73 @@ async function collectStops(
     };
     if (at) stackShown.add(at.id);
     inspection.stops.push(stop);
+    const willStep = req.steps > 0 && steppingPossible && stepsLeft > 0;
+    // A post-mortem session is inspection only: nothing to follow, nothing to retire.
+    let following = !first.single;
+    // Retire a breakpoint that made its hits before the steps, so neither they nor the run stop there again.
+    if (following && at && hits >= at.maxHits && remaining.delete(at.id) && (remaining.size > 0 || willStep)) {
+      try {
+        await session.removeBreakpoint(at.id);
+      } catch (err) {
+        warnings.push(
+          `Could not keep ${at.label} from stopping the run again (${debuggerErrorText(err)}); no further stops were recorded.`,
+        );
+        following = false;
+      }
+    }
     const variables =
       req.variables.length > 0
         ? await readNamedVariables(session, req.variables)
         : await readFrameVariables(session, warnings);
     stop.variables = variables;
+    let run: StepRun | undefined;
     if (req.steps > 0) {
       if (!steppingPossible) {
         warnings.push(`SAP reports stepping is not possible at stop ${stop.stop}; its steps were skipped.`);
       } else if (stepsLeft <= 0) {
         warnings.push(`A capture records at most ${MAX_TOTAL_STEPS} steps; stop ${stop.stop} has none.`);
       } else {
-        const watch = variables
-          .filter((variable) => req.variables.includes(variable.name) && !variable.error)
-          .map((variable) => variable.name);
-        const run = await runSteps(session, req.stepMode, Math.min(req.steps, stepsLeft), watch, warnings);
+        const refused = new Map(
+          variables.flatMap((variable) =>
+            variable.error && variable.error !== NOT_VISIBLE ? [[variable.name, variable.error] as const] : [],
+          ),
+        );
+        run = await runSteps(
+          session,
+          req,
+          Math.min(req.steps, stepsLeft),
+          { stack, refused },
+          reach,
+          deadline,
+          warnings,
+        );
         stepsLeft -= run.steps.length;
-        stop.steps = run.steps;
+        if (run.steps.length > 0) stop.steps = run.steps;
         if (run.ended) {
           inspection.release = { released: true, via: 'continue' };
           return;
         }
-        if (!run.steppingPossible) return;
+        if (run.outOfTime || (!run.reached && !run.steppingPossible)) return;
       }
     }
-    if (first.single) return;
-    if (at && hits >= at.maxHits) {
-      remaining.delete(at.id);
-      if (remaining.size > 0) {
-        try {
-          await session.removeBreakpoint(at.id);
-        } catch (err) {
-          warnings.push(
-            `Could not keep ${at.label} from stopping the run again (${debuggerErrorText(err)}); no further stops were recorded.`,
-          );
-          return;
-        }
-      }
-    }
-    if (remaining.size === 0) return;
+    if (!following) return;
+    if (!run?.reached && remaining.size === 0) return;
     if (inspection.stops.length >= MAX_STOPS) {
       warnings.push(`A capture records at most ${MAX_STOPS} stops; the rest of the run went on without stopping.`);
       return;
     }
-    if (deadline - Date.now() < CONTINUE_MARGIN_MS) {
+    if (deadline - Date.now() < timings.continueMarginMs) {
       warnings.push(
         `The ${INSPECTION_BUDGET_MS / 1000}s inspection budget ran out after ${inspection.stops.length} stop(s); the rest of the run went on without stopping.`,
       );
       return;
+    }
+    if (run?.reached) {
+      // A step ran into the next stop: the run already stands there.
+      reachedBreakpoints = [run.reached.id];
+      reachedStack = run.reached.stack;
+      steppingPossible = run.steppingPossible;
+      continue;
     }
     const next = await session.step('stepContinue');
     if (next.status === 'ended') {

@@ -46,14 +46,18 @@ interface Position {
   line: number;
 }
 
-/** `withUri: false` — SAP leaves the frame's uri out, so only reachedBreakpoints can name the stop. */
-function stackXml(at: Position, withUri = true): string {
+/** `withUri: false` — SAP leaves the frame's uri out, so only reachedBreakpoints can name the stop.
+ *  `inHelper`: the line belongs to HELPER, a method GET_TOTAL calls — one frame deeper. */
+function stackXml(at: Position, withUri = true, inHelper = false): string {
   const uri = (column: number) => (withUri ? ` uri="${at.path}#start=${at.line},${column}"` : '');
+  const helper = inHelper
+    ? `<stackEntry stackPosition="3" programName="ZCL_ORDER=====================CP" includeName="ZCL_ORDER=====================CM002" line="${at.line - 6}" eventType="METHOD" eventName="HELPER" systemProgram="false"${uri(4)}/>`
+    : '';
   const top =
     at.path === MAIN
-      ? `<stackEntry stackPosition="2" programName="ZCL_ORDER=====================CP" includeName="ZCL_ORDER=====================CM001" line="${at.line - 6}" eventType="METHOD" eventName="GET_TOTAL" systemProgram="false"${uri(4)}/>`
+      ? `<stackEntry stackPosition="2" programName="ZCL_ORDER=====================CP" includeName="ZCL_ORDER=====================CM001" line="${inHelper ? 3 : at.line - 6}" eventType="METHOD" eventName="GET_TOTAL" systemProgram="false"${inHelper ? '' : uri(4)}/>`
       : `<stackEntry stackPosition="2" programName="ZREPORT" includeName="ZREPORT" line="${at.line}" eventType="EVENT" eventName="START-OF-SELECTION" systemProgram="false"${uri(1)}/>`;
-  return `<?xml version="1.0" encoding="utf-8"?><dbg:stack xmlns:dbg="http://www.sap.com/adt/debugger">${top}<stackEntry stackPosition="1" programName="SAPLSAUNIT_TEST_RUNNER" includeName="LSAUNIT_TEST_RUNNERU01" line="7" eventType="FUNCTION" eventName="SAUNIT_RUN" systemProgram="true"/></dbg:stack>`;
+  return `<?xml version="1.0" encoding="utf-8"?><dbg:stack xmlns:dbg="http://www.sap.com/adt/debugger">${helper}${top}<stackEntry stackPosition="1" programName="SAPLSAUNIT_TEST_RUNNER" includeName="LSAUNIT_TEST_RUNNERU01" line="7" eventType="FUNCTION" eventName="SAUNIT_RUN" systemProgram="true"/></dbg:stack>`;
 }
 
 /** SAP's breakpoint id for a position: location-derived, so the external breakpoint and its session copy share it. */
@@ -72,22 +76,26 @@ const hierarchy = (parent: string, child: string, name = child) =>
 
 const VARIABLES: Record<string, string> = {
   LV_TOTAL: variable('LV_TOTAL', 'simple', '42'),
+  LV_HELPER: variable('LV_HELPER', 'simple', '7'),
   LS_HEAD: variable('LS_HEAD', 'structure'),
   LT_ITEMS: variable('LT_ITEMS', 'table', '', '<TABLE_LINES>2</TABLE_LINES>'),
   'LT_ITEMS[1]': variable('LT_ITEMS[1]', 'structure'),
   'LT_ITEMS[2]': variable('LT_ITEMS[2]', 'structure'),
+  'LT_ITEMS[3]': variable('LT_ITEMS[3]', 'structure'),
 };
 const CHILDREN: Record<string, string[]> = {
   '@LOCALS': ['LV_TOTAL', 'LS_HEAD', 'LT_ITEMS'],
   LS_HEAD: ['LS_HEAD-VBELN', 'LS_HEAD-KUNNR'],
   'LT_ITEMS[1]': ['LT_ITEMS[1]-POSNR'],
   'LT_ITEMS[2]': ['LT_ITEMS[2]-POSNR'],
+  'LT_ITEMS[3]': ['LT_ITEMS[3]-POSNR'],
 };
 const LEAF_VALUES: Record<string, string> = {
   'LS_HEAD-VBELN': '0000004711',
   'LS_HEAD-KUNNR': 'CUST01',
   'LT_ITEMS[1]-POSNR': '000010',
   'LT_ITEMS[2]-POSNR': '000020',
+  'LT_ITEMS[3]-POSNR': '000030',
 };
 
 interface Call {
@@ -130,10 +138,22 @@ interface FakeSapOptions {
    *  breakpoint; `stepContinue` runs on to the next one with a session breakpoint, or to the end. Unset: the
    *  run stops once at line 9 of ZCL_ORDER and `stepContinue` ends it. */
   execution?: Position[];
-  /** attach / stepContinue answers name the breakpoint reached (reachedBreakpoints). */
+  /** attach / step / stepContinue answers name the breakpoint reached (reachedBreakpoints). */
   namesBreakpoints?: boolean;
   /** Stack frames carry no uri. */
   stackWithoutUri?: boolean;
+  /** The lines successive steps land on (a loop goes back); past its end a step moves one line on. */
+  stepPath?: number[];
+  /** Lines of HELPER, a method GET_TOTAL calls: the stack is one frame deeper there. */
+  helperLines?: number[];
+  /** Variables that exist only on these lines (declared in the frame the run is in there). */
+  visibleOn?: Record<string, number[]>;
+  /** Expressions SAP refuses: a getVariables batch carrying one fails as a whole. */
+  failingVariables?: string[];
+  /** From this line on, LT_ITEMS has a third row (an APPEND ran). */
+  appendAtLine?: number;
+  /** The attach lands in a post-mortem (short dump) session: no stepping. */
+  postMortem?: boolean;
 }
 
 const cannotAttach = (line: number) =>
@@ -146,9 +166,10 @@ const cannotAttach = (line: number) =>
 
 function installFakeSap(options: FakeSapOptions = {}) {
   const calls: Call[] = [];
-  /** Where the debuggee stands; steps move it a line on. */
+  /** Where the debuggee stands; steps move it a line on (or along `stepPath`). */
   let position: Position = { path: MAIN, line: 9 };
   let cursor = 0;
+  let stepCursor = 0;
   /** Armed breakpoints by position → id: the user's external ones, and the attached run's own copies. */
   const external = new Map<string, string>();
   let sessionBreakpoints = new Map<string, string>();
@@ -303,7 +324,10 @@ function installFakeSap(options: FakeSapOptions = {}) {
       if (options.hit) await releasedPromise;
       return mockResponse(200, AUNIT_PASSED);
     }
-    if (path === '/sap/bc/adt/debugger/stack') return mockResponse(200, stackXml(position, !options.stackWithoutUri));
+    if (path === '/sap/bc/adt/debugger/stack') {
+      const inHelper = position.path === MAIN && (options.helperLines ?? []).includes(position.line);
+      return mockResponse(200, stackXml(position, !options.stackWithoutUri, inHelper));
+    }
     if (path === '/sap/bc/adt/debugger') {
       switch (q.get('method')) {
         case 'attach':
@@ -317,13 +341,19 @@ function installFakeSap(options: FakeSapOptions = {}) {
           sessionBreakpoints = new Map(external);
           return mockResponse(
             200,
-            `<dbg:attach xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true">${reached()}</dbg:attach>`,
+            options.postMortem
+              ? '<dbg:attach xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="false" isPostMortem="true"/>'
+              : `<dbg:attach xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true">${reached()}</dbg:attach>`,
           );
         case 'stepOver':
         case 'stepInto':
         case 'stepReturn':
-          position = { ...position, line: position.line + 1 };
-          return mockResponse(200, '<dbg:step xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true"/>');
+          position = { ...position, line: options.stepPath?.[stepCursor++] ?? position.line + 1 };
+          // A step that lands on one of the run's breakpoints stops there as at a breakpoint.
+          return mockResponse(
+            200,
+            `<dbg:step xmlns:dbg="http://www.sap.com/adt/debugger" isSteppingPossible="true">${reached()}</dbg:step>`,
+          );
         case 'stepContinue':
           for (cursor++; options.execution && cursor < options.execution.length; cursor++) {
             const next = options.execution[cursor] as Position;
@@ -358,12 +388,24 @@ function installFakeSap(options: FakeSapOptions = {}) {
         }
         case 'getVariables': {
           const ids = [...body.matchAll(/<ID>([^<]+)<\/ID>/g)].map((m) => (m[1] as string).replace('ME-&gt;', 'ME->'));
+          if (ids.some((id) => options.failingVariables?.includes(id))) {
+            return mockResponse(
+              500,
+              ENDED.replace('debuggeeEnded', 'variableError').replace('Debuggee ended', 'Expression is not valid here'),
+            );
+          }
+          const visible = (id: string) => options.visibleOn?.[id]?.includes(position.line) ?? true;
+          const appended = options.appendAtLine !== undefined && position.line >= options.appendAtLine;
           const values = ids.flatMap((id) =>
-            id === 'LV_TOTAL'
-              ? [variable('LV_TOTAL', 'simple', String(30 + position.line))]
-              : VARIABLES[id]
-                ? [VARIABLES[id]]
-                : [],
+            !visible(id)
+              ? []
+              : id === 'LV_TOTAL'
+                ? [variable('LV_TOTAL', 'simple', String(30 + position.line))]
+                : id === 'LT_ITEMS' && appended
+                  ? [variable('LT_ITEMS', 'table', '', '<TABLE_LINES>3</TABLE_LINES>')]
+                  : VARIABLES[id]
+                    ? [VARIABLES[id]]
+                    : [],
           );
           return mockResponse(200, asx(values.join('')));
         }
@@ -509,10 +551,94 @@ describe('SAPDiagnose action="debug" — a hit', () => {
       },
       { name: 'LV_NOPE', kind: 'unknown', error: 'not visible in the stopped frame' },
     ]);
+    // After a step too, a table shows its rows — `unchanged` when equal to the previous step's.
     expect(json?.stops[0].steps).toEqual([
-      expect.objectContaining({ step: 1, line: 4, values: { LV_TOTAL: '40', LT_ITEMS: 'table[2]' } }),
-      expect.objectContaining({ step: 2, line: 5, values: { LV_TOTAL: '41', LT_ITEMS: 'table[2]' } }),
+      expect.objectContaining({
+        step: 1,
+        line: 4,
+        values: { LV_TOTAL: '40', LT_ITEMS: { lines: 2, rows: [{ POSNR: '000010' }, { POSNR: '000020' }] } },
+        notVisible: ['LV_NOPE'],
+      }),
+      expect.objectContaining({
+        step: 2,
+        line: 5,
+        values: { LV_TOTAL: '41', LT_ITEMS: 'unchanged' },
+        notVisible: ['LV_NOPE'],
+      }),
     ]);
+  });
+
+  it('shows a table growing across steps', async () => {
+    installFakeSap({ hit: true, appendAtLine: 11 });
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, variables: ['LT_ITEMS'], steps: 3 });
+    expect(json?.stops[0].steps.map((step: Record<string, any>) => step.values.LT_ITEMS)).toEqual([
+      { lines: 2, rows: [{ POSNR: '000010' }, { POSNR: '000020' }] },
+      { lines: 3, rows: [{ POSNR: '000010' }, { POSNR: '000020' }, { POSNR: '000030' }] },
+      'unchanged',
+    ]);
+  });
+
+  it('reads a variable once a step enters the method that declares it, and marks the frame moves', async () => {
+    installFakeSap({ hit: true, helperLines: [10, 11], visibleOn: { LV_HELPER: [10, 11] } });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      line: 9,
+      variables: ['LV_TOTAL', 'LV_HELPER'],
+      steps: 3,
+      stepMode: 'into',
+    });
+    expect(json?.stops[0].variables[1]).toEqual({
+      name: 'LV_HELPER',
+      kind: 'unknown',
+      error: 'not visible in the stopped frame',
+    });
+    expect(json?.stops[0].steps).toEqual([
+      expect.objectContaining({
+        step: 1,
+        procedure: 'METHOD HELPER',
+        frame: 'entered',
+        values: { LV_TOTAL: '40', LV_HELPER: '7' },
+      }),
+      expect.objectContaining({ step: 2, procedure: 'METHOD HELPER', values: { LV_TOTAL: '41', LV_HELPER: '7' } }),
+      expect.objectContaining({
+        step: 3,
+        procedure: 'METHOD GET_TOTAL',
+        frame: 'returned',
+        values: { LV_TOTAL: '42' },
+        notVisible: ['LV_HELPER'],
+      }),
+    ]);
+    expect(json?.stops[0].steps[1]).not.toHaveProperty('frame');
+    // A same-named variable in the new frame is another variable: the result says so.
+    expect(json?.warnings).toContainEqual(expect.stringContaining('a variable of the same name is a different'));
+  });
+
+  it('leaves an expression SAP refuses out of the later reads of the same frame', async () => {
+    const { calls } = installFakeSap({ hit: true, failingVariables: ['LV_BAD'] });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      line: 9,
+      variables: ['LV_TOTAL', 'LV_BAD'],
+      steps: 3,
+    });
+    expect(json?.stops[0].variables).toEqual([
+      expect.objectContaining({ name: 'LV_TOTAL', value: '39' }),
+      { name: 'LV_BAD', kind: 'unknown', error: 'Expression is not valid here' },
+    ]);
+    expect(json?.stops[0].steps).toEqual(
+      [40, 41, 42].map((total) =>
+        expect.objectContaining({
+          values: { LV_TOTAL: String(total) },
+          errors: { LV_BAD: 'Expression is not valid here' },
+        }),
+      ),
+    );
+    // The stop: the failed batch, then one read per name; each step: one batch without the refused name.
+    const reads = calls.filter((c) => c.query.get('method') === 'getVariables');
+    expect(reads).toHaveLength(6);
+    expect(reads.slice(3).every((c) => !c.body.includes('LV_BAD'))).toBe(true);
   });
 
   it('runs the unit tests and attaches on one server, both pinned before the stop (multi-server system)', async () => {
@@ -750,6 +876,103 @@ describe('SAPDiagnose action="debug" — several stops in one run', () => {
     const out = installFakeSap({ hit: true });
     await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, steps: 1, stepMode: 'out' });
     expect(method(out.calls, 'stepReturn')).toHaveLength(1);
+  });
+
+  it('makes a step that runs into a breakpoint the next stop, and counts its hit', async () => {
+    const line10 = 'CLAS ZCL_ORDER the main source line 10';
+    // SAP names the breakpoint in the step answer, or only the stack's position shows it.
+    for (const namesBreakpoints of [true, false]) {
+      const { calls } = installFakeSap({ hit: true, namesBreakpoints, execution: [at9] });
+      const { json } = await debug({
+        type: 'CLAS',
+        name: 'ZCL_ORDER',
+        breakpoints: [{ line: 9 }, { line: 10 }],
+        variables: ['LV_TOTAL'],
+        steps: 2,
+      });
+      expect(json?.breakpoints.map((bp: Record<string, unknown>) => bp.hits)).toEqual([1, 1]);
+      expect(json?.stops).toEqual([
+        expect.objectContaining({
+          stop: 1,
+          at: line9,
+          steps: [expect.objectContaining({ step: 1, breakpoint: line10 })],
+        }),
+        expect.objectContaining({
+          stop: 2,
+          at: line10,
+          variables: [expect.objectContaining({ name: 'LV_TOTAL', value: '40' })],
+          steps: [expect.objectContaining({ step: 1 }), expect.objectContaining({ step: 2 })],
+        }),
+      ]);
+      // The stop right after the interrupted step reads its values.
+      expect(json?.stops[0].steps[0]).not.toHaveProperty('values');
+      // The run already stood at the second stop: no continue to reach it, one to release the run.
+      expect(method(calls, 'stepContinue')).toHaveLength(1);
+    }
+  });
+
+  it('takes a step back onto a loop breakpoint as its next hit, and none after its last', async () => {
+    const { calls } = installFakeSap({ hit: true, execution: [at9], stepPath: [10, 9, 10, 9, 10] });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      breakpoints: [{ line: 9, hits: 2 }],
+      variables: ['LV_TOTAL'],
+      steps: 3,
+    });
+    expect(json?.stops.map((stop: Record<string, unknown>) => [stop.at, stop.hit])).toEqual([
+      [line9, 1],
+      [line9, 2],
+    ]);
+    expect(json?.stops[0].steps).toEqual([
+      expect.objectContaining({ step: 1, values: { LV_TOTAL: '40' } }),
+      expect.objectContaining({ step: 2, breakpoint: line9 }),
+    ]);
+    // Its hits made, the breakpoint left the run before the steps: back on line 9 is just a step.
+    expect(json?.stops[1].steps).toHaveLength(3);
+    expect(json?.stops[1].steps.some((step: Record<string, unknown>) => 'breakpoint' in step)).toBe(false);
+    expect(json?.breakpoints.map((bp: Record<string, unknown>) => bp.hits)).toEqual([2]);
+    const retired = calls.filter((c) => c.method === 'DELETE' && c.query.get('scope') === 'debugger');
+    expect(retired.map((c) => c.path)).toEqual(['/sap/bc/adt/debugger/breakpoints/BP-L9']);
+  });
+
+  it("back in the caller, takes a breakpoint on the line it returned to only on SAP's word", async () => {
+    const at10 = { path: MAIN, line: 10 };
+    const returned: FakeSapOptions = { hit: true, helperLines: [10, 11], execution: [at10], stepPath: [11, 12] };
+    const args = { type: 'CLAS', name: 'ZCL_ORDER', breakpoints: [{ line: 10 }, { line: 12 }], steps: 2 };
+
+    installFakeSap({ ...returned });
+    const byPosition = await debug(args);
+    expect(byPosition.json?.stops).toHaveLength(1);
+    expect(byPosition.json?.stops[0].steps[1]).toMatchObject({ step: 2, frame: 'returned' });
+    expect(byPosition.json?.stops[0].steps[1]).not.toHaveProperty('breakpoint');
+    expect(byPosition.json?.breakpoints.map((bp: Record<string, unknown>) => bp.hits)).toEqual([1, 0]);
+
+    installFakeSap({ ...returned, namesBreakpoints: true });
+    const named = await debug(args);
+    expect(named.json?.stops).toHaveLength(2);
+    expect(named.json?.breakpoints.map((bp: Record<string, unknown>) => bp.hits)).toEqual([1, 1]);
+  });
+
+  it('inspects a post-mortem session once, retiring and following nothing', async () => {
+    const { calls } = installFakeSap({ hit: true, postMortem: true, execution: [at9, at11] });
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', breakpoints: [{ line: 9 }, { line: 11 }] });
+    expect(json?.stops).toHaveLength(1);
+    expect(json?.warnings).toContainEqual(expect.stringContaining('post-mortem'));
+    expect(calls.some((c) => c.method === 'DELETE' && c.query.get('scope') === 'debugger')).toBe(false);
+  });
+
+  it('stops stepping when the inspection budget runs low, and still releases the run', async () => {
+    setDebugTimingsForTests({ continueMarginMs: 10 * 60_000 });
+    try {
+      installFakeSap({ hit: true });
+      const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9, steps: 3 });
+      expect(json?.stops[0]).not.toHaveProperty('steps');
+      expect(json?.warnings).toContainEqual(expect.stringContaining('inspection budget ran low after 0 step(s)'));
+      expect(json?.release).toMatchObject({ released: true });
+    } finally {
+      setDebugTimingsForTests({ continueMarginMs: 15_000 });
+    }
   });
 
   it('records at most 40 steps across all stops', async () => {

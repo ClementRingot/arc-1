@@ -1,6 +1,6 @@
 # ABAP debugger for ARC-1 — one-shot breakpoint capture dossier
 
-> **Evidence level: corroborated; live-verified on the BTP ABAP Environment only (2026-10-23, §9).**
+> **Evidence level: corroborated; live-verified on the BTP ABAP Environment only (2026-10-23/24, §9).**
 > No SAP system was reachable from the session that produced this dossier, so the contract facts
 > below come from three independent client implementations that drive the same SAP resources, two of
 > them with recorded live verification; facts marked **(L)** were since observed live by ARC-1. The
@@ -205,7 +205,8 @@ probe POST, then one line per location) → start the long poll (stateless) → 
 trigger → race (hit / trigger finished / timeout) → attach on one stateful session on the debuggee's
 application server, opened before the run (§3.6) → clear the external breakpoints (the run keeps its
 session copies) → **follow the run stop by stop**: stack + variables + steps; a breakpoint that has
-made its `hits` is deleted from the session (`scope=debugger`); `stepContinue` to the next stop →
+made its `hits` is deleted from the session (`scope=debugger`) before the stop's steps; a step that
+runs into a breakpoint is the next stop, else `stepContinue` to it →
 until no breakpoint is left, the program ends, or a cap (10 stops, 40 steps, the 120 s inspection
 budget) is reached → release (clear session breakpoints, `stepContinue` until ended;
 `terminateDebuggee` only as last resort) → always: delete the listener, settle the trigger.
@@ -213,6 +214,15 @@ budget) is reached → release (clear session breakpoints, `stepContinue` until 
 Which breakpoint a stop belongs to: the id SAP names in `reachedBreakpoints` (attach / step), else
 the line breakpoint at the top frame's `uri` position, else the only one armed; otherwise the stop is
 reported without `at` and retires nothing (bounded by the caps).
+
+A step ran into a breakpoint when SAP names a still-armed one in the step's `reachedBreakpoints`, or
+the top frame stands on one's line — not after a return to the caller (`frame: returned`), whose
+frame stands on the call it already passed. That step ends its stop's steps (`breakpoint`), and the
+next stop is recorded where the run stands, counting toward that breakpoint's `hits`. Each step
+re-reads every requested variable — also one the stop could not see, as a step can enter the
+method that declares it — and marks a frame move (`frame`: entered / returned / changed), since a
+same-named variable there is another variable. A name SAP refuses (its batch fails) is left out of
+that frame's later reads, so it cannot fail every step.
 
 Why one run with several stops rather than several captures: every capture re-runs the trigger from
 the start — time, possibly different data, repeated side effects, and with `trigger="none"` the user
@@ -223,8 +233,9 @@ Output (JSON): `hit`, `debuggee` (incl. `server`), `breakpoints` (set with the `
 with SAP's message, or `duplicate` of another location on the same line), `stops` (each `stop`, `at`,
 `hit` for repeating breakpoints, `stoppedAt`, `stack` + `hiddenSystemFrames` on a breakpoint's first
 stop — a loop's later stops would repeat it —, `variables` (simple values, one level of structure
-components, first table rows; values truncated), `steps` (each watched variable, structures by their
-components)), `release`, `trigger` (outcome; `server` when ARC-1 pinned its run), `warnings`
+components, first table rows; values truncated), `steps` (position; `values`: each watched variable,
+structures by their components, tables by line count + first rows, `unchanged` when equal to the
+previous step's; `notVisible`; `errors`; `frame`; `breakpoint`)), `release`, `trigger` (outcome; `server` when ARC-1 pinned its run), `warnings`
 (deduplicated).
 
 ## 6. ARC-1 impact
@@ -339,10 +350,47 @@ breakpoint in the query provider of a custom entity, behind a freshly published 
 stopped under the SADL / Gateway V4 stack, with the request and response objects readable. For the
 first minutes after the publish (which itself outlasted ARC-1's request timeout) the service answered
 403 "blocked by UCON"; such a capture reports `trigger failed` with its own hint. `trigger=none` works
-with a run the user starts by hand: with the breakpoint armed through ARC-1, the action executed in a
-Fiori app in the browser (the same SAP user under PP) stopped there, and ARC-1 attached and returned
-the capture (reported by the PR author). Still owed on BTP: a run long enough to probe the poll
-timeout under PP (11), and several stops in one run (13).
+with a run the user starts by hand (below). Still owed on BTP: a run long enough to probe the poll
+timeout under PP (11).
+
+**Done on the BTP ABAP Environment trial (2026-10-24, the multi-stop build, `trigger=none`, reported
+by the PR author):** a RAP draft BO (`/DMO/BP_TRAVEL_D`, service `/DMO/UI_TRAVEL_D_D_O4`) and a
+managed BO without draft (`ZPCL_BP_PI_TRAVEL_M`), each action started by hand in its Fiori Elements
+app as the same SAP user. Working: line and method breakpoints (a method breakpoint lands on the
+`METHOD` line), several breakpoints in one run (13), `stepInto` into a local helper
+(`get_instance_authorizations` → `is_update_granted`), `stepOver` and `stepReturn`, simple variables,
+structure components, field symbols and tables with their rows at a stop, the full stack with the
+hidden system frames counted, a clean release (the app gets its answer), and the refusal while
+Eclipse listens for the same user (4). Found, and changed in ARC-1 since:
+
+- Steps read only the requested variables visible at the stop, so one declared in a frame a step
+  entered was never read (`COUNTRY_CODE` after `stepInto` into `is_update_granted`; with the
+  breakpoint inside the callee the same names read fine), and a same-named variable of another frame
+  (`KEYS`) read back without a sign. Steps now re-read every requested name, list the missing ones
+  in `notVisible`, and mark a frame move (`frame`).
+- During steps a table showed only its line count (`table[1]`), so a `COLLECT` or `APPEND` could
+  not be followed. Steps now show its first rows, `unchanged` when equal to the previous step's.
+- A `stepOver` or `stepReturn` that runs into a breakpoint stops there — over
+  `MODIFY ENTITIES … EXECUTE reCalcTotalPrice` (line 323) stopped at a breakpoint on line 249 of the
+  called handler; out of line 237 (`hits: 3`, a two-pass loop) stayed on 237 for the next pass; over
+  from line 175 reached the breakpoint on 181 — but ARC-1 recorded a plain step, counted no hit and
+  spent none of `hits`. Such a step now ends its stop's steps (`breakpoint`) and is the next stop,
+  counting toward the breakpoint's `hits`; a breakpoint that made its `hits` leaves the run before
+  its stop's steps. Whether SAP names that breakpoint in the step's `reachedBreakpoints` was not
+  recorded, so ARC-1 also takes the top frame's position (§5).
+
+Not changed, documented in `docs_page/tools.md`:
+
+- Where a step stops in SAP code: `stepOver` at the end of `precheck_update` (line 819) went up into
+  `CL_RAP_BHV_PROCESSOR=>EXECUTE_PRECHECKS` (lines 343, 349), while `stepReturn` out of
+  `reCalcTotalPrice` skipped 11 frames (`CL_DSP_*`, `CL_RAP_EML_*`) straight back to
+  `calculateTotalPrice`, line 323. Consistent with SAP skipping system programs while system
+  debugging is off (ARC-1 never turns it on) and `CL_RAP_BHV_PROCESSOR` not being one — not confirmed:
+  check those frames' `systemProgram` flag in a recorded stack.
+- `trigger=none` takes the first request of the user that reaches a breakpoint: the Fiori Elements
+  list read (`READ_ENTITY_LIST`, 30 instances) ran `get_instance_authorizations` before the *Edit*
+  click that was meant. Arm once the page has loaded and prefer breakpoints only the target action
+  runs; a breakpoint condition would target a request (follow-up, unverified in ADT).
 
 **Only the BTP ABAP Environment has been tested live.** Every other landscape is still owed before the
 action is relied on there: SAP S/4HANA on-premise (items 1–10), SAP S/4HANA Cloud Private Edition (the
@@ -377,10 +425,10 @@ SAP S/4HANA Cloud Public Edition (12).
 12. SAP S/4HANA Cloud Public Edition: confirm that a developer-extensibility user can arm an external
     breakpoint and attach on the development tenant, that the unit-test trigger runs there, and that
     `systeminformation` names the mapped SAP user under its SAML-based principal propagation.
-13. Several stops in one run (§5, not yet live): after the attach has deleted the external
-    breakpoints, the run still stops at the next one (`stepContinue` answers 200 + `<dbg:step>` there,
-    i.e. the session copies are independent); a loop breakpoint with `hits: 3` stops three times and,
-    once its session copy is deleted (`DELETE …?scope=debugger` on the attached session), no more;
-    `reachedBreakpoints` on attach/step carries the external ids (else the stop is placed from the
-    stack's `uri`); `stepInto` enters a called method and `stepReturn` comes back to the caller with
-    the same `<dbg:step>` answer. Record the bodies as fixtures.
+13. Several stops in one run (§5) — live on BTP 2026-10-24 (above): after the attach has deleted the
+    external breakpoints, the run still stops at the next one; `stepInto` enters a called method and
+    `stepReturn` comes back to the caller. Still owed: a loop breakpoint with `hits: 3` stopping three
+    times through `stepContinue` and, once its session copy is deleted (`DELETE …?scope=debugger` on
+    the attached session), no more; whether `reachedBreakpoints` on attach and on a step carries the
+    external ids (else the stop is placed from the stack's `uri`); a step interrupted by a breakpoint
+    recorded as the next stop (the change above); the bodies as fixtures.
