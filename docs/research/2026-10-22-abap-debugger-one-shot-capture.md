@@ -386,13 +386,19 @@ Not changed, documented in `docs_page/tools.md`:
 - Where a step stops in SAP code: `stepOver` at the end of `precheck_update` (line 819) went up into
   `CL_RAP_BHV_PROCESSOR=>EXECUTE_PRECHECKS` (lines 343, 349), while `stepReturn` out of
   `reCalcTotalPrice` skipped 11 frames (`CL_DSP_*`, `CL_RAP_EML_*`) straight back to
-  `calculateTotalPrice`, line 323. Consistent with SAP skipping system programs while system
-  debugging is off (ARC-1 never turns it on) and `CL_RAP_BHV_PROCESSOR` not being one — not confirmed:
-  check those frames' `systemProgram` flag in a recorded stack.
+  `calculateTotalPrice`, line 323. Seen again after the changes below: `stepInto` on that
+  `MODIFY ENTITIES` went straight into `reCalcTotalPrice` (line 196), past the RAP, DSP and CSP
+  frames; `stepReturn` out of `calculateTotalPrice` stopped in
+  `CL_CSP_WRP_BEHAVIOR=>EXEC_DETERMINATIONS_ON_MODIFY` (line 38); `stepInto` on line 255
+  (`convert_currency`) entered `CL_ABAP_CONTEXT_INFO=>GET_SYSTEM_DATE` (line 210). Consistent with SAP
+  skipping system programs while system debugging is off (ARC-1 never turns it on) and the classes it
+  stopped in not being ones — not confirmed: check those frames' `systemProgram` flag in a recorded
+  stack.
 - `trigger=none` takes the first request of the user that reaches a breakpoint: the Fiori Elements
   list read (`READ_ENTITY_LIST`, 30 instances) ran `get_instance_authorizations` before the *Edit*
   click that was meant. Arm once the page has loaded and prefer breakpoints only the target action
-  runs; a breakpoint condition would target a request (follow-up, unverified in ADT).
+  runs; a breakpoint condition would target a request (follow-up, unverified in ADT). Not retested
+  after the changes below.
 
 **Also done there (2026-10-24, the same build, `trigger=unittest`, reported by the PR author):** a
 line breakpoint with `hits: 2` and `steps: 2` in `ZCL_DEMO_ABAP_UNIT_TEST=>GET_DIGIT_SUM` (line 229)
@@ -411,6 +417,31 @@ the test include, 14 system frames hidden) and a `stepContinue` release. Found, 
   ABAP the conversion leaves the sign position as a trailing blank, which a string keeps. ARC-1 lost
   it twice (the XML parser's value trimming, then the display). Variable documents are now parsed
   keeping blanks, and a string shows them; other values are still trimmed.
+
+**Retested after both rounds of changes (2026-10-24, build `4ca5d1d6`, reported by the PR author):**
+the same RAP objects, and `ltc_travel` — the 35 ABAP Unit tests of `/DMO/BP_TRAVEL_D`. Confirmed:
+entering `reCalcTotalPrice` (`frame: entered`), a step reads `TRAVELS`, `<TRAVEL>-TOTALPRICE` and
+`BOOKING_LINKS`, and `TRAVELS` fills after its `READ ENTITIES` (line 205 → 211); entering
+`is_update_granted` reads `COUNTRY_CODE = DE`; each step lists `notVisible`, and the same-name warning
+comes with a frame move; tables read as `{lines, rows}` during steps, `unchanged` when still; the step
+over `MODIFY ENTITIES … EXECUTE reCalcTotalPrice` (line 323) carries `breakpoint` where it stopped on
+line 249, which becomes its own stop with its own steps (`hits: 1`); the `stepReturn` out of line 237
+(`hits: 3`) stopped on the loop's second pass and became stop 2 (`hit: 2`). Seen working for the first
+time: a breakpoint in the `testclasses` include, `stepInto` from a test method into the production one
+(`ltc_travel=>is_update_granted` → `lhc_travel=>is_update_granted`), and `trigger=unittest` on the
+behavior pool (35 of 35 passed, 2 stops). The PR author reported the build's other changes (default
+trigger object, numbering, string blanks) working too. Open:
+
+- An empty table (or one past the expansion cap) reads as the string `table[0]` in steps, a filled one
+  as `{lines, rows}`.
+- An unassigned field symbol reads like an empty value: `<TRAVEL>-TOTALPRICE` gave `""` on lines
+  196–214 of `reCalcTotalPrice`, before its `LOOP … ASSIGNING`. What SAP returns for it is not
+  recorded.
+- A breakpoint can make fewer stops than its `hits` (line 255, `hits: 2`, reached once) — consistent
+  with the test data (one foreign currency), not confirmed.
+
+Ruled out: `BOOKING-BOOKINGID = 0000` on line 237 is right — the `READ ENTITIES` on line 214 asks only
+for `FlightPrice` and `CurrencyCode`.
 
 **Only the BTP ABAP Environment has been tested live.** Every other landscape is still owed before the
 action is relied on there: SAP S/4HANA on-premise (items 1–10), SAP S/4HANA Cloud Private Edition (the
@@ -448,7 +479,7 @@ SAP S/4HANA Cloud Public Edition (12).
 13. Several stops in one run (§5) — live on BTP 2026-10-24 (above): after the attach has deleted the
     external breakpoints, the run still stops at the next one; a loop breakpoint with `hits: 2` stops
     twice through `stepContinue`; `stepInto` enters a called method and `stepReturn` comes back to the
-    caller. Still owed: once a breakpoint's session copy is deleted (`DELETE …?scope=debugger` on the
-    attached session), no more stops there; whether `reachedBreakpoints` on attach and on a step carries the
-    external ids (else the stop is placed from the stack's `uri`); a step interrupted by a breakpoint
-    recorded as the next stop (the change above); the bodies as fixtures.
+    caller; a step that runs into a breakpoint becomes the next stop. Still owed: once a breakpoint's
+    session copy is deleted (`DELETE …?scope=debugger` on the attached session), no more stops there;
+    whether `reachedBreakpoints` on attach and on a step carries the external ids (else the stop is
+    placed from the stack's `uri`); the bodies as fixtures.
