@@ -338,8 +338,11 @@ later activation, so the hint only suggests waiting a minute. `trigger=http` wor
 breakpoint in the query provider of a custom entity, behind a freshly published OData V4 UI binding,
 stopped under the SADL / Gateway V4 stack, with the request and response objects readable. For the
 first minutes after the publish (which itself outlasted ARC-1's request timeout) the service answered
-403 "blocked by UCON"; such a capture reports `trigger failed` with its own hint. Still owed on BTP: a
-run long enough to probe the poll timeout under PP (11).
+403 "blocked by UCON"; such a capture reports `trigger failed` with its own hint. `trigger=none` works
+with a run the user starts by hand: with the breakpoint armed through ARC-1, the action executed in a
+Fiori app in the browser (the same SAP user under PP) stopped there, and ARC-1 attached and returned
+the capture (reported by the PR author). Still owed on BTP: a run long enough to probe the poll
+timeout under PP (11), and several stops in one run (13).
 
 **Only the BTP ABAP Environment has been tested live.** Every other landscape is still owed before the
 action is relied on there: SAP S/4HANA on-premise (items 1–10), SAP S/4HANA Cloud Private Edition (the
