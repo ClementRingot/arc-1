@@ -194,7 +194,7 @@ model needs must be asked for up front (`variables`, `steps`), which also keeps 
 | `breakpoints` | The stops of the run (max 6), each `{ line \| method, include?, hits?, type?, name? }`: a 1-based line in the object's main source (or in `include`), or a `CLAS` method (`get_total`, `lhc_travel~validate`, `zif_x~run`) → ARC-1 resolves the `METHOD` line with `extractMethod` and walks forward to the first line SAP accepts. `include` (`CLAS`): `implementations` / `testclasses` (auto-detected for `lhc_`/`lcl_`/`ltc_` methods). `hits` (1–10, default 1): stops this breakpoint may make — a loop. `type`/`name` per item let one run stop in several objects. |
 | `line` | Shorthand for one line breakpoint in `type` + `name`. |
 | `exceptionClass` | Optional exception breakpoint (with or without line breakpoints); stops once. |
-| `trigger` | `unittest` (default): harmless ABAP Unit of `triggerName` (a CLAS/PROG/FUGR resolved by exact repository match; default: the breakpoint object, FUNC → its FUGR). `http`: GET of `url` — a host-relative OData path, same guard as `odata_perf`. `none`: wait while *you* run it (Fiori app, SE38, Postman) as the same SAP user. |
+| `trigger` | `unittest` (default): harmless ABAP Unit of `triggerName` (a CLAS/PROG/FUGR resolved by exact repository match; default: the `type` + `name` object, else the first breakpoint's object, FUNC → its FUGR). `http`: GET of `url` — a host-relative OData path, same guard as `odata_perf`. `none`: wait while *you* run it (Fiori app, SE38, Postman) as the same SAP user. |
 | `variables` | Variable expressions to read at every stop and after every step (`LV_TOTAL`, `LS_HEAD-VBELN`, `LT_ITEMS`, `ME->MV_STATE`, `SY-SUBRC`). Default: the stopped frame's variables (children of `@ROOT`'s scopes). |
 | `steps` / `stepMode` | 0–20 steps after each stop (at most 40 per capture), each recording position + `variables`; `over` (default), `into` (`stepInto`: follow calls) or `out` (`stepReturn`: back to the caller). |
 | `timeoutSeconds` | How long to wait for the first stop (1–240, default 60). |
@@ -229,11 +229,13 @@ the start — time, possibly different data, repeated side effects, and with `tr
 has to act again. `stepRunToLine` is not used: a second breakpoint plus `stepContinue` reaches the
 same line and also covers other objects.
 
-Output (JSON): `hit`, `debuggee` (incl. `server`), `breakpoints` (set with the `hits` it made, refused
+Output (JSON): `hit`, `debuggee` (incl. `server`; `line` + `uri` from its `URI` — `LINE_CURR` counts within
+`INCL_CURR`, so without a URI it is given as `include` + `includeLine`), `breakpoints` (set with the `hits` it made, refused
 with SAP's message, or `duplicate` of another location on the same line), `stops` (each `stop`, `at`,
 `hit` for repeating breakpoints, `stoppedAt`, `stack` + `hiddenSystemFrames` on a breakpoint's first
 stop — a loop's later stops would repeat it —, `variables` (simple values, one level of structure
-components, first table rows; values truncated), `steps` (position; `values`: each watched variable,
+components, first table rows; values truncated, a string with its leading and trailing blanks — they count,
+`CONV string( 124 )` is `'124 '` — other values trimmed), `steps` (position; `values`: each watched variable,
 structures by their components, tables by line count + first rows, `unchanged` when equal to the
 previous step's; `notVisible`; `errors`; `frame`; `breakpoint`)), `release`, `trigger` (outcome; `server` when ARC-1 pinned its run), `warnings`
 (deduplicated).
@@ -392,6 +394,24 @@ Not changed, documented in `docs_page/tools.md`:
   click that was meant. Arm once the page has loaded and prefer breakpoints only the target action
   runs; a breakpoint condition would target a request (follow-up, unverified in ADT).
 
+**Also done there (2026-10-24, the same build, `trigger=unittest`, reported by the PR author):** a
+line breakpoint with `hits: 2` and `steps: 2` in `ZCL_DEMO_ABAP_UNIT_TEST=>GET_DIGIT_SUM` (line 229)
+stopped twice in one run — through `stepContinue`, after the steps 229 → 230 → 227 — with the
+requested variables at each stop (`DIGIT_SUM` 0 → 1, then 1 → 3), the stack (`TEST_GET_DIGIT_SUM` in
+the test include, 14 system frames hidden) and a `stepContinue` release. Found, and changed since:
+
+- Without a top-level `type`/`name`, the unit-test trigger refused the call although its only
+  `breakpoints` item named the class. The first breakpoint's object is now the default.
+- `debuggee` gave `INCL_CURR` with its `LINE_CURR` (13, counted within the method include `CM004`)
+  while each stop gave line 229 with `…/source/main#start=229,0` (the stack's `line` attribute and its
+  `uri` agreed there). Every position is now numbered by SAP's URI, as `SAPRead` numbers the source;
+  a frame with a URI no longer shows the include its line does not count in, and a debuggee without
+  one gives `include` + `includeLine`.
+- `CONVERTED_INT = CONV string( num )` with `NUM = 124` read back as `"124"` while `strlen` gave 4: in
+  ABAP the conversion leaves the sign position as a trailing blank, which a string keeps. ARC-1 lost
+  it twice (the XML parser's value trimming, then the display). Variable documents are now parsed
+  keeping blanks, and a string shows them; other values are still trimmed.
+
 **Only the BTP ABAP Environment has been tested live.** Every other landscape is still owed before the
 action is relied on there: SAP S/4HANA on-premise (items 1–10), SAP S/4HANA Cloud Private Edition (the
 same checks on its release; it is typically reached through the Cloud Connector, hence also 11) and
@@ -426,9 +446,9 @@ SAP S/4HANA Cloud Public Edition (12).
     breakpoint and attach on the development tenant, that the unit-test trigger runs there, and that
     `systeminformation` names the mapped SAP user under its SAML-based principal propagation.
 13. Several stops in one run (§5) — live on BTP 2026-10-24 (above): after the attach has deleted the
-    external breakpoints, the run still stops at the next one; `stepInto` enters a called method and
-    `stepReturn` comes back to the caller. Still owed: a loop breakpoint with `hits: 3` stopping three
-    times through `stepContinue` and, once its session copy is deleted (`DELETE …?scope=debugger` on
-    the attached session), no more; whether `reachedBreakpoints` on attach and on a step carries the
+    external breakpoints, the run still stops at the next one; a loop breakpoint with `hits: 2` stops
+    twice through `stepContinue`; `stepInto` enters a called method and `stepReturn` comes back to the
+    caller. Still owed: once a breakpoint's session copy is deleted (`DELETE …?scope=debugger` on the
+    attached session), no more stops there; whether `reachedBreakpoints` on attach and on a step carries the
     external ids (else the stop is placed from the stack's `uri`); a step interrupted by a breakpoint
     recorded as the next stop (the change above); the bodies as fixtures.

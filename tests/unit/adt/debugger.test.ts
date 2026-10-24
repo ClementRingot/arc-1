@@ -460,6 +460,13 @@ describe('session documents', () => {
     );
   });
 
+  it("keeps a value's blanks as SAP sent them, and trims the identifying fields", () => {
+    const [text] = parseVariablesResponse(
+      '<asx:abap xmlns:asx="http://www.sap.com/abapxml" version="1.0"><asx:values><DATA><STPDA_ADT_VARIABLE><ID> LV_TEXT </ID><META_TYPE>string</META_TYPE><VALUE> 124 </VALUE></STPDA_ADT_VARIABLE></DATA></asx:values></asx:abap>',
+    );
+    expect(text).toMatchObject({ id: 'LV_TEXT', metaType: 'string', value: ' 124 ' });
+  });
+
   it('parses variables and child variables', () => {
     const variables = parseVariablesResponse(
       '<asx:abap xmlns:asx="http://www.sap.com/abapxml" version="1.0"><asx:values><DATA><STPDA_ADT_VARIABLE><ID>LV_TOTAL</ID><NAME>LV_TOTAL</NAME><DECLARED_TYPE_NAME>I</DECLARED_TYPE_NAME><META_TYPE>simple</META_TYPE><VALUE>42</VALUE><TECHNICAL_TYPE>I</TECHNICAL_TYPE><IS_VALUE_INCOMPLETE/></STPDA_ADT_VARIABLE><STPDA_ADT_VARIABLE><ID>LT_ITEMS</ID><NAME>LT_ITEMS</NAME><DECLARED_TYPE_NAME>ZTT_ITEMS</DECLARED_TYPE_NAME><META_TYPE>TABLE</META_TYPE><VALUE/><TABLE_LINES>3</TABLE_LINES></STPDA_ADT_VARIABLE><STPDA_ADT_VARIABLE><ID>LV_TEXT</ID><NAME>LV_TEXT</NAME><META_TYPE>string</META_TYPE><VALUE>a &lt;b&gt; &#x41;</VALUE><IS_VALUE_INCOMPLETE>X</IS_VALUE_INCOMPLETE></STPDA_ADT_VARIABLE></DATA></asx:values></asx:abap>',

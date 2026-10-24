@@ -320,8 +320,10 @@ async function planTrigger(client: AdtClient, req: DebugRequest): Promise<Trigge
     checkOperation(client.safety, OperationType.Query, 'DebugTriggerHttp');
     return { kind: 'http', url: req.url, label: `GET ${req.url}` };
   }
-  let name = req.triggerName ?? req.name;
-  let type = req.triggerName ? await resolveUnitTestObjectType(client, req.triggerName) : req.type;
+  // Without a top-level object, the first breakpoint's object runs its unit tests.
+  const object = req.type && req.name ? { type: req.type, name: req.name } : req.locations[0];
+  let name = req.triggerName ?? object?.name;
+  let type = req.triggerName ? await resolveUnitTestObjectType(client, req.triggerName) : object?.type;
   if (!type || !name) {
     throw new DebugInputError(
       'trigger="unittest" needs the unit-test object: triggerName (a CLAS, PROG or FUGR), or a CLAS/PROG/FUNC breakpoint object.',
@@ -577,17 +579,19 @@ interface CapturedVariable {
 }
 
 function clip(value: string): { value: string; truncated?: true } {
-  const trimmed = value.trimEnd();
-  return trimmed.length > MAX_VALUE_CHARS
-    ? { value: trimmed.slice(0, MAX_VALUE_CHARS), truncated: true }
-    : { value: trimmed };
+  return value.length > MAX_VALUE_CHARS ? { value: value.slice(0, MAX_VALUE_CHARS), truncated: true } : { value };
+}
+
+/** A string keeps its blanks — they count (`CONV string( 124 )` is `'124 '`, `strlen` 4); other kinds lose SAP's padding. */
+function shownValue(variable: DebugVariable): string {
+  return variable.metaType === 'string' ? variable.value : variable.value.trim();
 }
 
 /** One-line rendering for structure components, table rows and step values. */
 function compactValue(variable: DebugVariable): string {
   if (variable.metaType === 'table') return `table[${variable.tableLines ?? 0}]`;
   if (variable.metaType === 'structure') return 'structure';
-  return clip(variable.value).value;
+  return clip(shownValue(variable)).value;
 }
 
 function describeVariable(variable: DebugVariable, scope?: string): CapturedVariable {
@@ -600,7 +604,7 @@ function describeVariable(variable: DebugVariable, scope?: string): CapturedVari
   };
   if (variable.metaType === 'table') return { ...base, lines: variable.tableLines ?? 0 };
   if (variable.metaType === 'structure') return base;
-  const clipped = clip(variable.value);
+  const clipped = clip(shownValue(variable));
   return { ...base, value: clipped.value, ...(clipped.truncated || variable.incomplete ? { truncated: true } : {}) };
 }
 
@@ -733,15 +737,25 @@ async function readFrameVariables(session: DebuggerSession, warnings: string[]):
   return pairs.map((pair) => pair.out);
 }
 
+/** A frame's position numbered like SAPRead: its URI's line. Without a URI, the line within `include`. */
 function describeFrame(frame: DebugStackFrame): Record<string, unknown> {
   const procedure = [frame.eventType, frame.eventName].filter(Boolean).join(' ');
+  const position = frame.uri ? sourcePosition(frame.uri) : undefined;
+  const line = position?.line ?? frame.line;
   return {
     ...(procedure ? { procedure } : {}),
     program: frame.program,
-    ...(frame.include && frame.include !== frame.program ? { include: frame.include } : {}),
-    ...(frame.line !== undefined ? { line: frame.line } : {}),
+    ...(!position && frame.include && frame.include !== frame.program ? { include: frame.include } : {}),
+    ...(line !== undefined ? { line } : {}),
     ...(frame.uri ? { uri: frame.uri } : {}),
   };
+}
+
+/** Where the debuggee waited, numbered like the stops (its URI's line); without a URI, the line within `include`. */
+function debuggeePosition(debuggee: Debuggee): Record<string, unknown> {
+  const line = debuggee.uri ? sourcePosition(debuggee.uri)?.line : undefined;
+  if (line !== undefined) return { line, uri: debuggee.uri };
+  return { include: debuggee.include, ...(debuggee.line !== undefined ? { includeLine: debuggee.line } : {}) };
 }
 
 /** The frames worth showing: customer code (system frames counted), at most MAX_STACK_FRAMES. */
@@ -1343,8 +1357,7 @@ async function runCapture(client: AdtClient, req: DebugRequest, user: string): P
         debuggee: {
           user: debuggee.user,
           program: debuggee.program,
-          include: debuggee.include,
-          ...(debuggee.line !== undefined ? { line: debuggee.line } : {}),
+          ...debuggeePosition(debuggee),
           ...(debuggee.kind ? { kind: debuggee.kind } : {}),
           ...(debuggee.instance ? { server: debuggee.instance } : {}),
         },

@@ -71,15 +71,16 @@ function toInt(value: string): number | undefined {
 }
 
 /** The shared ADT XML boundary: entities decoded once, single repeated elements left unwrapped
- *  (every reader below goes through `asNodes`, which accepts one node or many). */
-function parseDocument(xml: string): XmlNode {
-  return asNode(parseXml(xml)) ?? {};
+ *  (every reader below goes through `asNodes`, which accepts one node or many). `exact` keeps the
+ *  texts' leading and trailing blanks — a variable's value needs them. */
+function parseDocument(xml: string, exact = false): XmlNode {
+  return asNode(parseXml(xml, exact)) ?? {};
 }
 
 /** Children of `<asx:abap><asx:values><DATA>` — every debugger ABAP-XML envelope uses it (the shared
  *  parser always makes `DATA` an array). */
-function abapData(xml: string): XmlNode | undefined {
-  return asNodes(asNode(asNode(parseDocument(xml).abap)?.values)?.DATA)[0];
+function abapData(xml: string, exact = false): XmlNode | undefined {
+  return asNodes(asNode(asNode(parseDocument(xml, exact).abap)?.values)?.DATA)[0];
 }
 
 // ─── Identity ──────────────────────────────────────────────────────
@@ -600,6 +601,7 @@ export interface DebugVariable {
   /** simple | string | structure | table | objectref | dataref | class | object | boxref | … */
   metaType: string;
   technicalType: string;
+  /** As SAP sent it, blanks included: a string's trailing blank is part of it (`CONV string( 124 )` = `'124 '`). */
   value: string;
   tableLines?: number;
   /** SAP truncated the value (IS_VALUE_INCOMPLETE). */
@@ -630,7 +632,7 @@ function parseVariableNode(node: XmlNode): DebugVariable {
 
 export function parseVariablesResponse(xml: string): DebugVariable[] {
   if (!xml.trim()) return [];
-  return asNodes(abapData(xml)?.STPDA_ADT_VARIABLE).map(parseVariableNode);
+  return asNodes(abapData(xml, true)?.STPDA_ADT_VARIABLE).map(parseVariableNode);
 }
 
 export function parseChildVariablesResponse(xml: string): {
@@ -638,7 +640,7 @@ export function parseChildVariablesResponse(xml: string): {
   variables: DebugVariable[];
 } {
   if (!xml.trim()) return { hierarchies: [], variables: [] };
-  const data = abapData(xml);
+  const data = abapData(xml, true);
   const hierarchies = asNodes(asNode(data?.HIERARCHIES)?.STPDA_ADT_VARIABLE_HIERARCHY).map((node) => ({
     parentId: text(node.PARENT_ID).trim(),
     childId: text(node.CHILD_ID).trim(),

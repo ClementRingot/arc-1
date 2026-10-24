@@ -47,7 +47,8 @@ interface Position {
 }
 
 /** `withUri: false` — SAP leaves the frame's uri out, so only reachedBreakpoints can name the stop.
- *  `inHelper`: the line belongs to HELPER, a method GET_TOTAL calls — one frame deeper. */
+ *  `inHelper`: the line belongs to HELPER, a method GET_TOTAL calls — one frame deeper. The `line`
+ *  attribute counts within the method include on purpose: ARC-1 must number positions by the uri. */
 function stackXml(at: Position, withUri = true, inHelper = false): string {
   const uri = (column: number) => (withUri ? ` uri="${at.path}#start=${at.line},${column}"` : '');
   const helper = inHelper
@@ -77,6 +78,9 @@ const hierarchy = (parent: string, child: string, name = child) =>
 const VARIABLES: Record<string, string> = {
   LV_TOTAL: variable('LV_TOTAL', 'simple', '42'),
   LV_HELPER: variable('LV_HELPER', 'simple', '7'),
+  // CONV string( 124 ): the sign position is a trailing blank, and in a string it counts.
+  LV_TEXT: variable('LV_TEXT', 'string', '124 '),
+  LV_CHAR: variable('LV_CHAR', 'simple', 'ABC   '),
   LS_HEAD: variable('LS_HEAD', 'structure'),
   LT_ITEMS: variable('LT_ITEMS', 'table', '', '<TABLE_LINES>2</TABLE_LINES>'),
   'LT_ITEMS[1]': variable('LT_ITEMS[1]', 'structure'),
@@ -186,9 +190,13 @@ function installFakeSap(options: FakeSapOptions = {}) {
   /** Multi-server: the server the debuggee waits on, from its stop to its release. */
   let stoppedOn: string | undefined;
   const debuggeeXml = () => {
-    const xml = options.attachImpossible
+    let xml = options.attachImpossible
       ? DEBUGGEE_XML.replace('<IS_ATTACH_IMPOSSIBLE>false', '<IS_ATTACH_IMPOSSIBLE>X')
       : DEBUGGEE_XML;
+    // As on the BTP ABAP Environment: LINE_CURR counts within INCL_CURR, the URI like SAPRead.
+    if (!options.stackWithoutUri) {
+      xml = xml.replace('</STPDA_DEBUGGEE>', `<URI>${position.path}#start=${position.line},0</URI></STPDA_DEBUGGEE>`);
+    }
     return stoppedOn
       ? xml.replace('</STPDA_DEBUGGEE>', `<INSTANCE_NAME>${stoppedOn}</INSTANCE_NAME></STPDA_DEBUGGEE>`)
       : xml;
@@ -478,13 +486,18 @@ describe('SAPDiagnose action="debug" — a hit', () => {
         {
           stop: 1,
           at: 'CLAS ZCL_ORDER method get_total',
-          stoppedAt: { procedure: 'METHOD GET_TOTAL', line: 3 },
+          // Numbered like SAPRead and the breakpoint — not within the method include.
+          stoppedAt: { procedure: 'METHOD GET_TOTAL', line: 9, uri: `${MAIN}#start=9,4` },
           hiddenSystemFrames: 1,
         },
       ],
       release: { released: true, via: 'continue' },
       trigger: { kind: 'unittest', target: 'ABAP Unit CLAS ZCL_ORDER', status: 'completed' },
     });
+    // The debuggee's position in the same numbering: its URI's line, not LINE_CURR (3, within the include).
+    expect(json?.debuggee).toMatchObject({ program: 'ZCL_ORDER=====================CP', line: 9 });
+    expect(json?.debuggee).not.toHaveProperty('includeLine');
+    expect(json?.stops[0].stoppedAt).not.toHaveProperty('include');
     expect(json?.stops).toHaveLength(1);
     expect(json?.stops[0].stack).toHaveLength(1);
     expect(json?.stops[0].variables).toEqual([
@@ -555,13 +568,13 @@ describe('SAPDiagnose action="debug" — a hit', () => {
     expect(json?.stops[0].steps).toEqual([
       expect.objectContaining({
         step: 1,
-        line: 4,
+        line: 10,
         values: { LV_TOTAL: '40', LT_ITEMS: { lines: 2, rows: [{ POSNR: '000010' }, { POSNR: '000020' }] } },
         notVisible: ['LV_NOPE'],
       }),
       expect.objectContaining({
         step: 2,
-        line: 5,
+        line: 11,
         values: { LV_TOTAL: '41', LT_ITEMS: 'unchanged' },
         notVisible: ['LV_NOPE'],
       }),
@@ -706,6 +719,39 @@ describe('SAPDiagnose action="debug" — a hit', () => {
     expect(json?.stops[0].steps).toEqual([
       expect.objectContaining({ step: 1, values: { LS_HEAD: { VBELN: '0000004711', KUNNR: 'CUST01' } } }),
     ]);
+  });
+
+  it("keeps a string's blanks (they count) and drops a fixed-length field's padding", async () => {
+    installFakeSap({ hit: true });
+    const { json } = await debug({
+      type: 'CLAS',
+      name: 'ZCL_ORDER',
+      line: 9,
+      variables: ['LV_TEXT', 'LV_CHAR'],
+      steps: 1,
+    });
+    expect(json?.stops[0].variables).toEqual([
+      expect.objectContaining({ name: 'LV_TEXT', kind: 'string', value: '124 ' }),
+      expect.objectContaining({ name: 'LV_CHAR', kind: 'simple', value: 'ABC' }),
+    ]);
+    expect(json?.stops[0].steps[0].values).toEqual({ LV_TEXT: '124 ', LV_CHAR: 'ABC' });
+  });
+
+  it("runs the unit tests of the breakpoint's object when the call names no top-level object", async () => {
+    installFakeSap({ hit: true });
+    const { result, json } = await debug({ breakpoints: [{ type: 'CLAS', name: 'zcl_order', line: 9 }] });
+    expect(result.isError).toBeFalsy();
+    expect(json).toMatchObject({
+      hit: true,
+      trigger: { kind: 'unittest', target: 'ABAP Unit CLAS ZCL_ORDER', status: 'completed' },
+    });
+  });
+
+  it("gives the debuggee's line within its include, labelled so, when SAP sends no URI", async () => {
+    installFakeSap({ hit: true, stackWithoutUri: true });
+    const { json } = await debug({ type: 'CLAS', name: 'ZCL_ORDER', line: 9 });
+    expect(json?.debuggee).toMatchObject({ include: 'ZCL_ORDER=====================CM001', includeLine: 3 });
+    expect(json?.debuggee).not.toHaveProperty('line');
   });
 
   it('refuses a second capture for the same SAP user while one is running', async () => {
