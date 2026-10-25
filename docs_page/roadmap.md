@@ -105,6 +105,9 @@ sequence.
 | [FEAT-73](#feat-73) | Additional server-driven object types | P3 | S | Needs research | Object coverage |
 | [FEAT-78](#feat-78) | Table type access type and keys | P2 | M | Needs research | Object coverage |
 | [FEAT-09](#feat-09) | Cross Trace result reader | P2 | M | Needs research | Diagnostics |
+| [FEAT-94](#feat-94) | Conditional debugger breakpoints | P2 | S | Needs research | Diagnostics |
+| [FEAT-95](#feat-95) | Compact repeated debugger stops with a result-size budget | P2 | M | Ready | Diagnostics |
+| [FEAT-96](#feat-96) | More breakpoints per debugger capture | P3 | XS | Ready | Diagnostics |
 | [FEAT-69](#feat-69) | Wider syntax-batch qualification | P3 | S | Needs research | Diagnostics |
 | [FEAT-71](#feat-71) | Dictionary activation log | P3 | M | Needs research | Diagnostics |
 | [FEAT-91](#feat-91) | Validate the legacy dump user filter | P2 | S | Needs research | Diagnostics |
@@ -891,6 +894,56 @@ volume limits are not implemented.
 
 **Resume with.** Capture a bounded real trace result, define redaction and response-size behavior,
 and keep trace activation separate from result reading.
+
+<a id="feat-94"></a>
+### FEAT-94 — Conditional debugger breakpoints
+
+- **Priority / effort / status:** P2 / S / Needs research
+- **Category:** Diagnostics
+
+**Idea.** Let a `SAPDiagnose action="debug"` breakpoint carry an ABAP condition, e.g.
+`{ "line": 42, "condition": "lv_index = 500" }`, so the run stops only where the condition holds.
+
+**Why it remains.** In a loop the capture can only stop on the first `hits` passes (at most 10), so
+reaching iteration 500 is impossible today. ADT line breakpoints accept a `condition` attribute
+(abap-adt-api's `formatBreakpoint` sends it), which would replace hundreds of stops with one.
+
+**Resume with.** Verify live on 758/816 and the BTP ABAP Environment how SAP reports an invalid or
+unresolvable condition (`reachedBreakpoints` carries `unresolvableCondition`), surface it in the
+breakpoint report, and fit the item property within the debug schema budget.
+
+<a id="feat-95"></a>
+### FEAT-95 — Compact repeated debugger stops with a result-size budget
+
+- **Priority / effort / status:** P2 / M / Ready
+- **Category:** Diagnostics
+
+**Idea.** From a breakpoint's second stop on, return only the named variables (or only the values
+that changed) as a compact per-iteration table, and end the capture on a result-size budget (for
+example 30–50 KB) next to the existing 120 s inspection budget instead of the fixed caps of 10 stops
+and 40 steps.
+
+**Why it remains.** The fixed counters are a poor proxy for cost: ten stops with two named
+variables are small, ten stops with sixty frame variables are large. A size budget would allow many
+more `hits` when the output stays small, while keeping the result readable for the model.
+
+**Resume with.** Measure real stop sizes from live captures, define the compact shape and the
+warning when the budget ends the capture, and keep the time budget and work-process protection
+unchanged.
+
+<a id="feat-96"></a>
+### FEAT-96 — More breakpoints per debugger capture
+
+- **Priority / effort / status:** P3 / XS / Ready
+- **Category:** Diagnostics
+
+**Idea.** Raise the limit of 6 `breakpoints` per capture (for example to 20).
+
+**Why it remains.** An armed breakpoint that is never reached costs almost nothing (one more entry in
+the probe POST); stops and steps stay capped separately, so the limit protects little.
+
+**Resume with.** Change the Zod maximum and the "max" wording in the schema description, check the
+probe POST size with many method breakpoints, and update the snapshot and docs.
 
 <a id="feat-74"></a>
 ### FEAT-74 — Qualify dump-filter matching
